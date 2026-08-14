@@ -1,0 +1,37 @@
+MIT License
+
+Copyright (c) 2026 小凛酱
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## BoothKeeper · 展位守护者
+
+一站式 BOOTH.pm 资产整理桌面端：批量链接、拖拽分类、目录巡检、版本巡检。
+
+项目主页：https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper
+
+---
+
+免责声明：本软件按"现状"提供，不对使用本软件造成的任何数据丢失、账号封禁、
+违反第三方服务条款等后果负责。用户应自行评估使用风险并保留原始数据备份。
+
+使用 BOOTH 数据时，请遵守 BOOTH 平台（booth.pm）的服务条款及版权规则。
+本工具仅作为本地文件管理辅助，不直接托管或分发 BOOTH 内容。

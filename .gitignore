@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller 构建产物（二进制走 GitHub Release，不进 git）
+build/
+dist/
+*.spec.bak
+
+# 备份/垃圾（同盘保留旧 exe 的地方）
+build_artifacts_trash/
+debug_out.txt
+
+# 中间产物 / 早期脚本（不入库）
+preview/
+preview2/
+preview_build/
+preview3.py
+preview4.py
+preview_render.py
+render_preview.py
+design_brief.md
+theme_v1_backup.py
+verify_kintsugi.py
+verify_offscreen.py
+verify_theme2.py
+test_offscreen_full.py
+SCORE_TABLE_R4.md
+SCORE_TABLE_R5.md
+SCORE_TABLE_R6.md
+
+# IDE / 系统
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 用户配置（绝不入库）
+.boothkeeper.json
