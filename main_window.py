@@ -13,6 +13,7 @@ from pages.dragdrop_page import DragDropPage
 from pages.search_page import SearchPage
 from pages.audit_page import AuditPage
 from pages.settings_page import SettingsPage
+from pages.notify import ThemeDialog
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
