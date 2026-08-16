@@ -6,10 +6,13 @@ SetCompressor /SOLID lzma
 
 !define APP_NAME "BoothKeeper"
 !define APP_DISPLAY_NAME "Booth Keeper · 展位守护者"
-!define APP_VERSION "1.0.1"
+!define APP_VERSION "1.1.0"
 !define APP_PUBLISHER "小凛酱"
 !define APP_EXE "BoothKeeper.exe"
 !define APP_ICON "D:\Lin_Agent\WB-WorkSpace\BoothKeeper\assets\app_icon.ico"
+
+; R10：终结旧进程，让 BoothKeeper 运行时也能直接安装更新
+; 用 tasklist + taskkill 命令（NSIS 自带 nsExec，无插件依赖）
 
 Name "${APP_DISPLAY_NAME} ${APP_VERSION}"
 OutFile "D:\Lin_Agent\WB-WorkSpace\BoothKeeper\dist\BoothKeeper_Setup_${APP_VERSION}.exe"
@@ -17,6 +20,22 @@ InstallDir "$PROGRAMFILES64\${APP_NAME}"
 RequestExecutionLevel admin
 ShowInstDetails show
 ShowUninstDetails show
+
+Function .onInit
+  DetailPrint "正在检查 BoothKeeper 旧进程..."
+  ; 用 tasklist 检查 BoothKeeper.exe（带过滤器，过滤 PID 列）
+  nsExec::ExecToLog 'cmd /c tasklist /FI "IMAGENAME eq BoothKeeper.exe" /NH'
+  Sleep 500
+  ; 直接尝试关闭（如果不存在则 taskkill 会报错，忽略）
+  nsExec::ExecToLog 'taskkill /IM "BoothKeeper.exe" /T'
+  Sleep 800
+  ; 检查是否还在
+  nsExec::ExecToLog 'cmd /c tasklist /FI "IMAGENAME eq BoothKeeper.exe" /NH | findstr /I "BoothKeeper.exe"'
+  Sleep 500
+  ; 如果还在，强制关闭
+  nsExec::ExecToLog 'taskkill /F /IM "BoothKeeper.exe" /T'
+  Sleep 500
+FunctionEnd
 
 ; Modern UI 2
 !include "MUI2.nsh"

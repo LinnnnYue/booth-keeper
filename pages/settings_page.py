@@ -82,6 +82,17 @@ class SettingsPage(BasePage):
         self.edit_cookie.setPlaceholderText("留空即可，仅在受限时填写")
         self.root.addWidget(self.edit_cookie)
 
+        # R10：自动检查更新
+        self.add_label("自动检查更新（启动时）")
+        self.chk_auto_update = QCheckBox("启动 BoothKeeper 时自动检查新版本")
+        self.chk_auto_update.setChecked(bool(self.main.config.get("auto_check_update", True)))
+        self.root.addWidget(self.chk_auto_update)
+
+        self.btn_check_update = QPushButton("立即检查更新")
+        self.btn_check_update.setObjectName("secondary")
+        self.btn_check_update.clicked.connect(self.check_update_now)
+        self.root.addWidget(self.btn_check_update)
+
         self.hline()
         save = QPushButton("保存设置")
         save.setObjectName("accent")
@@ -225,6 +236,41 @@ class SettingsPage(BasePage):
         self.main.config["proxy"] = self.chk_proxy.isChecked()
         self.main.config["proxy_url"] = self.edit_proxy.text().strip()
         self.main.config["cookie"] = self.edit_cookie.text().strip()
+        self.main.config["auto_check_update"] = self.chk_auto_update.isChecked()
         self.main.save_config()
         self.main.apply_theme()
         self.main.set_status("设置已保存")
+
+    def check_update_now(self):
+        """立即检查更新：拉 GitHub latest release → 比版本号 → 提示。"""
+        self.btn_check_update.setEnabled(False)
+        self.btn_check_update.setText("检查中…")
+        try:
+            from pages import updater
+            cfg = self.main.config
+            info = updater.check_update(proxy=cfg.get("proxy", False))
+            self.btn_check_update.setEnabled(True)
+            self.btn_check_update.setText("立即检查更新")
+            if info.get("error"):
+                ThemeDialog.warning(self, "检查更新失败",
+                    f"无法访问 GitHub API：\n{info['error']}\n\n"
+                    f"请检查网络/代理设置。")
+                return
+            local, remote = info["local"], info["remote"]
+            if info["has_update"]:
+                msg = (
+                    f"发现新版本！\n\n"
+                    f"  当前版本：{local}\n"
+                    f"  最新版本：{remote}\n\n"
+                    f"点「确定」前往下载页面（Release 含 Windows 安装包 + zip 便携版）。")
+                if ThemeDialog.confirmation(self, "有新版本可用", msg):
+                    updater.open_release_page()
+            else:
+                ThemeDialog.information(self, "已是最新",
+                    f"当前版本：{local}\n"
+                    f"最新版本：{remote}\n\n"
+                    f"无需更新 ✨")
+        except Exception as e:
+            self.btn_check_update.setEnabled(True)
+            self.btn_check_update.setText("立即检查更新")
+            ThemeDialog.error(self, "错误", f"检查更新异常：\n{e}")

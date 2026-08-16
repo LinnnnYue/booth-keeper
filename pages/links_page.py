@@ -46,23 +46,27 @@ class LinksWorker(QThread):
                 name = it.get("name") or iid
                 cat = bc.classify(it.get("category_name"), it.get("category_parent_name")) or "未分类"
                 dest = self.root / cat / f"{iid}_{bc.sanitize(name)}"
+                # R10 修复：dest 已存在不再 early-skip——必须走 fetch_item_downloads + 缺失补全流程
+                # （否则 v1.0.0 时代归档的目录会一直「已存在，跳过」，本体永远下载不到）
                 dup = dest.exists()
                 dest.mkdir(parents=True, exist_ok=True)
                 # R9: 先下载商品本体（之前缺失的核心步骤）
                 downloads = bc.fetch_item_downloads(iid, s)
                 downloaded_files = []
+                missing_files = []
                 if downloads:
                     for dl in downloads:
                         fname = dl.get("name") or f"{iid}_{bc.sanitize(name)}.zip"
-                        # 同名文件已存在 → 跳过（避免重复覆盖）
                         target = dest / fname
                         if target.exists() and target.stat().st_size > 0:
-                            self.log.emit(f"{iid} 文件已存在: {fname}")
+                            # 文件已存在 + 大小 > 0 → 跳过（不算下载）
                             downloaded_files.append(fname)
                             continue
+                        # 文件缺失 → 下载补全
+                        missing_files.append(fname)
                         try:
                             self.log.emit(
-                                f"{iid} 下载 {fname} ({dl.get('size_text','')})...")
+                                f"{iid} 补全下载 {fname} ({dl.get('size_text','')})...")
                             self._download_with_referer(dl["url"], str(target), s,
                                                          referer_id=iid)
                             if target.exists() and target.stat().st_size > 0:
@@ -87,10 +91,25 @@ class LinksWorker(QThread):
                         bc.make_folder_icon(cover, dest)
                     except Exception as e:
                         self.log.emit(f"{iid} 图标失败: {e}")
+                # R10: status 区分 "ok"/"warn"
+                # - ok: 新建（dest 不存在过）或本次补全了 ≥1 个文件
+                # - warn: dest 已存在且无补全（仅 cover/ico/ini 已有，本体也齐全）
+                if missing_files and downloaded_files:
+                    status = "ok"  # 至少补了一些
+                    self.log.emit(
+                        f"{iid} 补全完成：{len(downloaded_files)} 文件")
+                elif missing_files and not downloaded_files:
+                    status = "warn"  # 试图补全但都失败
+                    self.log.emit(
+                        f"{iid} 补全失败：{len(missing_files)} 个文件未下载")
+                else:
+                    status = "warn" if dup else "ok"
                 self.item_done.emit({
                     "id": iid, "name": name, "cat": cat,
-                    "status": "ok" if not dup else "warn", "dup": dup,
-                    "files": downloaded_files,  # R9 新增：记录下载的文件名
+                    "status": status, "dup": dup,
+                    "files": downloaded_files,
+                    "missing": missing_files,
+                    "is_backfill": dup and downloaded_files,  # R10: 标记是补全而非新建
                 })
             except Exception as e:
                 self.item_done.emit({"id": iid, "status": "err", "msg": str(e)[:80]})
@@ -210,17 +229,31 @@ class LinksPage(BasePage):
 
     def on_done(self, d):
         iid = d["id"]
-        # R9 新增：显示下载的文件列表
+        # R10 新增：显示下载的文件列表 + 补全标识
         files = d.get("files", [])
-        files_summary = f"  ({len(files)} 文件)" if files else "  ⚠ 无文件"
+        missing = d.get("missing", [])
+        is_backfill = d.get("is_backfill", False)
+        if files:
+            files_summary = f"  ({len(files)} 文件)"
+        else:
+            files_summary = "  ⚠ 无文件"
+        if is_backfill:
+            files_summary += "  🔄 补全"
         if d["status"] == "ok":
+            prefix = "🔄 补全" if is_backfill else "✓"
             item = QListWidgetItem(
-                f"{iid} · {d.get('name','')}  →  {d.get('cat','')}{files_summary}")
+                f"{iid} · {d.get('name','')}  →  {d.get('cat','')} {prefix}{files_summary}")
             item.setData(Qt.UserRole, "ok")
         elif d["status"] == "warn":
-            item = QListWidgetItem(
-                f"{iid} · {d.get('name','')}  →  已存在，跳过{files_summary}")
-            item.setData(Qt.UserRole, "warn")
+            if missing and not files:
+                # 试图补全但都失败
+                item = QListWidgetItem(
+                    f"{iid} · {d.get('name','')}  ⚠ 补全失败 ({len(missing)} 文件未下)")
+                item.setData(Qt.UserRole, "err")
+            else:
+                item = QListWidgetItem(
+                    f"{iid} · {d.get('name','')}  →  已存在，跳过{files_summary}")
+                item.setData(Qt.UserRole, "warn")
         else:
             item = QListWidgetItem(f"{iid}  ✕ {d.get('msg','失败')}")
             item.setData(Qt.UserRole, "err")

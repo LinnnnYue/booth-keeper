@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget, QLabel, QPushButton, QStatusBar, QApplication)
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QPainter, QColor, QPalette, QPixmap, QBrush, QIcon
 from PySide6.QtSvg import QSvgRenderer
 import theme
@@ -19,11 +19,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 CONFIG_PATH = Path.home() / ".boothkeeper.json"
+try:
+    from _version import __version__  # type: ignore
+except Exception:
+    __version__ = "1.1.0"
+
 DEFAULT_CONFIG = {
     "theme": theme.DEFAULT_THEME,
     "booth_root": r"G:\Lin_File\BOOTH",
     "proxy": True,
     "proxy_url": "http://127.0.0.1:20122/",
+    "auto_check_update": True,  # R10：启动时自动检查更新
     "cookie": "",
 }
 
@@ -96,13 +102,40 @@ class RootWidget(QWidget):
 class BoothKeeper(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Booth Keeper")
+        self.setWindowTitle(f"Booth Keeper v{__version__}")
         self.resize(1080, 700)
         self.config = self.load_config()
         self.pages = {}
         self.build_ui()
         self.apply_theme()
         self.switch_page("links")
+        # R10：启动后自动检查更新（延迟 2s 避免阻塞 UI）
+        if self.config.get("auto_check_update", True):
+            QTimer.singleShot(2000, self.auto_check_update)
+
+    def auto_check_update(self):
+        """启动时自动检查更新。检测到新版弹主题化主题对话框。"""
+        try:
+            from pages import updater
+            info = updater.check_update(proxy=self.config.get("proxy", False))
+            if info.get("error"):
+                return  # 静默失败，不打扰用户
+            if info["has_update"]:
+                # 延迟到主窗口 ready 后再弹
+                QTimer.singleShot(0, lambda: self._show_update_dialog(info))
+        except Exception:
+            pass
+
+    def _show_update_dialog(self, info):
+        msg = (
+            f"🎉 发现新版本！\n\n"
+            f"  当前版本：{info['local']}\n"
+            f"  最新版本：{info['remote']}\n\n"
+            f"点「确定」前往 GitHub Release 下载（Windows 安装包 / zip 便携版）。\n\n"
+            f"安装包升级时会自动关闭旧进程，无需手动退出。")
+        if ThemeDialog.confirmation(self, "有新版本可用", msg):
+            from pages import updater
+            updater.open_release_page()
 
     # ---- 配置 ----
     def load_config(self):

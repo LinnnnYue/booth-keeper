@@ -31,8 +31,27 @@ def _ver_gt(a, b):
     return ta > tb
 
 
+# R10 修复：本体的扩展名（商品文件类型）
+BODY_EXTENSIONS = frozenset({
+    ".zip", ".unitypackage", ".blend", ".fbx", ".obj", ".gltf", ".glb",
+    ".png", ".jpg", ".jpeg", ".pdf", ".mp4", ".wav", ".mp3", ".txt",
+    ".rar", ".7z", ".tar", ".gz", ".bz2",  # 压缩包
+})
+
+
+def has_body(d: Path) -> bool:
+    """R10 检测目录是否含商品本体文件（非三件套）。"""
+    for f in d.iterdir():
+        if not f.is_file():
+            continue
+        if f.suffix.lower() in BODY_EXTENSIONS and f.stat().st_size > 1024:
+            return True
+    return False
+
+
 def scan_library(root):
-    """遍历 BOOTH 库，定位 ID_标题 商品目录，检查三件套并提取本地版本。"""
+    """遍历 BOOTH 库，定位 ID_标题 商品目录，检查三件套并提取本地版本。
+    R10 强化：还检测目录是否缺商品本体（只有三件套 cover/ico/ini 但无 zip/unitypackage）。"""
     root = Path(root)
     out = []
     if not root.exists():
@@ -51,9 +70,12 @@ def scan_library(root):
             missing.append("图标")
         if not (d / "desktop.ini").exists():
             missing.append("ini")
+        # R10: 检测本体缺失
+        body_missing = not has_body(d)
         out.append({
             "id": iid, "name": name, "path": str(d),
             "missing": missing, "local_tag": bc.extract_version_tag(d.name),
+            "body_missing": body_missing,  # True = 缺本体文件
         })
     return out
 
@@ -183,6 +205,73 @@ class FixWorker(QThread):
                     self.prog.emit(f"未修复 {it['id']}：封面缺失，无法生成图标")
             except Exception as e:
                 self.prog.emit(f"失败 {it['id']}: {e}")
+        self.finished.emit(fixed)
+
+
+class BackfillWorker(QThread):
+    """R10 新增：本体检索 worker——扫描库内所有 ID_xxx 目录，凡缺商品本体的拉取 BOOTH 商品页下载链接补齐。
+
+    与 LinksWorker 不同：本 worker 不需要 ID 列表，直接从现有目录结构中扫描。
+    """
+    prog = Signal(str)
+    finished = Signal(int)  # 成功补全的目录数
+
+    def __init__(self, items, root, proxy, proxy_url, cookie):
+        super().__init__()
+        self.items = [i for i in items if i.get("body_missing")]
+        self.root = root
+        self.proxy = proxy
+        self.proxy_url = proxy_url
+        self.cookie = cookie
+
+    def run(self):
+        s = bc.make_session(self.cookie)
+        if self.proxy:
+            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+        fixed = 0
+        for it in self.items:
+            dest = Path(it["path"])
+            try:
+                downloads = bc.fetch_item_downloads(it["id"], s)
+                if not downloads:
+                    self.prog.emit(
+                        f"  · {it['id']} · {it['name']} 商品页未找到下载链接")
+                    continue
+                # 已存在的文件（无论何种）不重复下
+                existing = {f.name for f in dest.iterdir() if f.is_file()
+                             and f.stat().st_size > 0}
+                ok = False
+                for dl in downloads:
+                    fname = dl.get("name") or f"{it['id']}_file.zip"
+                    if fname in existing:
+                        self.prog.emit(f"  · {it['id']} {fname} 已存在，跳过")
+                        continue
+                    target = dest / fname
+                    try:
+                        referer = f"https://booth.pm/ja/items/{it['id']}"
+                        r = bc.retry_request(
+                            "GET", dl["url"], s,
+                            headers={**bc.UA, "Referer": referer},
+                            timeout=120, stream=True)
+                        if not r or r.status_code != 200:
+                            self.prog.emit(
+                                f"  · {it['id']} {fname} HTTP {r.status_code if r else 'None'}")
+                            continue
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with open(target, "wb") as f:
+                            for chunk in r.iter_content(chunk_size=64 * 1024):
+                                if chunk:
+                                    f.write(chunk)
+                        if target.exists() and target.stat().st_size > 0:
+                            ok = True
+                            self.prog.emit(
+                                f"  ✓ {it['id']} {fname} ({target.stat().st_size / 1024 / 1024:.2f} MB)")
+                    except Exception as e:
+                        self.prog.emit(f"  · {it['id']} {fname} 异常: {e}")
+                if ok:
+                    fixed += 1
+            except Exception as e:
+                self.prog.emit(f"  · {it['id']} 异常: {e}")
         self.finished.emit(fixed)
 
 
@@ -317,6 +406,30 @@ class AuditPage(BasePage):
         self.list_mismatch.setMinimumHeight(120)
         self.root.addWidget(self.list_mismatch)
 
+        # R10：本体缺失修复区（独立于错位纠正）
+        warn3 = QLabel("本体缺失修复：扫描后列出只有三件套（cover+ico+ini）但缺商品本体（zip/unitypackage 等）的目录，点下方按钮一键补全。")
+        warn3.setObjectName("muted")
+        warn3.setWordWrap(True)
+        self.root.addWidget(warn3)
+
+        row4 = QHBoxLayout()
+        self.btn_backfill = QPushButton("一键补全本体")
+        self.btn_backfill.setObjectName("accent")
+        self.btn_backfill.clicked.connect(self.start_backfill)
+        self.btn_backfill.setEnabled(False)
+        self.lbl_backfill = QLabel("")
+        self.lbl_backfill.setObjectName("muted")
+        self.lbl_backfill.setProperty("mono", "1")
+        row4.addWidget(self.btn_backfill)
+        row4.addStretch(1)
+        row4.addWidget(self.lbl_backfill)
+        self.root.addLayout(row4)
+
+        self.list_backfill = QListWidget()
+        self.list_backfill.setObjectName("obs")
+        self.list_backfill.setMinimumHeight(120)
+        self.root.addWidget(self.list_backfill)
+
     # ---- 本地巡检 ----
     def start_scan(self):
         root = self.main.config["booth_root"]
@@ -326,12 +439,15 @@ class AuditPage(BasePage):
             return
         self.list_scan.clear()
         self.list_mismatch.clear()
+        self.list_backfill.clear()
         self.lbl_stat.setText("巡检中…")
         self.lbl_mismatch.setText("错位检测中…")
+        self.lbl_backfill.setText("本体检测中…")
         self.btn_scan.setEnabled(False)
         self.btn_fix.setEnabled(False)
         self.btn_ver.setEnabled(False)
         self.btn_mismatch.setEnabled(False)
+        self.btn_backfill.setEnabled(False)
         cfg = self.main.config
         # R8：本地巡检 + 联网错位检测一并跑（一个 worker 跑完两项）
         self.scan_worker = ScanWorker(root, cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
@@ -346,7 +462,9 @@ class AuditPage(BasePage):
             tag = "缺" + "/".join(it["missing"])
         else:
             tag = "完整"
-        self.list_scan.addItem(f"{it['id']} · {it['name']}   [{tag}]")
+        # R10: 标记本体缺失
+        body_tag = " ⚠缺本体" if it.get("body_missing") else ""
+        self.list_scan.addItem(f"{it['id']} · {it['name']}   [{tag}]{body_tag}")
 
     def on_mismatch_item(self, m):
         """R8 错位项信号（联网比对）。"""
@@ -383,6 +501,54 @@ class AuditPage(BasePage):
         self.btn_mismatch.setEnabled(False)
         self.list_mismatch.addItem(f"── 纠正完成：{fixed} 件已重归档 ──")
         self.main.set_status(f"错位纠正完成：{fixed} 件")
+
+    # ---- R10 本体补全 ----
+    def on_scan_done(self, items):
+        self.scan_items = items
+        total = len(items)
+        missing = sum(1 for i in items if i["missing"])
+        self.lbl_stat.setText(f"共 {total} 件，{missing} 件缺失三件套")
+        self.badge_ok.setText(f"完整 {total - missing}")
+        self.badge_miss.setText(f"缺失 {missing}")
+        self.btn_scan.setEnabled(True)
+        self.btn_fix.setEnabled(missing > 0)
+        self.btn_ver.setEnabled(total > 0)
+        self.main.set_status(f"巡检完成：{total} 件，{missing} 件待修复")
+        # R10: 同时统计本体缺失
+        self._all_scan_items = items
+        body_missing = [it for it in items if it.get("body_missing")]
+        self.list_backfill.clear()
+        for it in body_missing:
+            self.list_backfill.addItem(
+                f"{it['id']} · {it['name']}   ⚠缺本体")
+        if body_missing:
+            self.lbl_backfill.setText(f"检测到 {len(body_missing)} 件缺本体")
+            self.btn_backfill.setEnabled(True)
+        else:
+            self.lbl_backfill.setText("无本体缺失 ✓")
+            self.btn_backfill.setEnabled(False)
+
+    def start_backfill(self):
+        items = getattr(self, "_all_scan_items", [])
+        body_items = [it for it in items if it.get("body_missing")]
+        if not body_items:
+            return
+        cfg = self.main.config
+        self.btn_backfill.setEnabled(False)
+        self.lbl_backfill.setText(f"正在补全 {len(body_items)} 件…")
+        self.backfill_worker = BackfillWorker(body_items, cfg["booth_root"],
+            cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+        self.backfill_worker.prog.connect(self.list_backfill.addItem)
+        self.backfill_worker.finished.connect(self.on_backfill_done)
+        self.backfill_worker.start()
+
+    def on_backfill_done(self, fixed):
+        n = len([it for it in getattr(self, "_all_scan_items", [])
+                  if it.get("body_missing")])
+        self.lbl_backfill.setText(f"补全完成：{fixed}/{n} 件")
+        self.btn_backfill.setEnabled(False)
+        self.list_backfill.addItem(f"── 补全完成：{fixed} 件本体已下载 ──")
+        self.main.set_status(f"本体补全完成：{fixed} 件")
 
     def on_scan_done(self, items):
         self.scan_items = items
