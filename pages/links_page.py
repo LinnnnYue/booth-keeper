@@ -17,6 +17,10 @@ BARE_ID_RE = re.compile(r"(?<![\dA-Za-z])(\d{7})(?![\dA-Za-z])")
 
 
 class LinksWorker(QThread):
+    """R9 修复：之前只下载封面 + 做图标，从未下载商品本体（unitypackage/zip/blend/fbx等）。
+
+    新流程：fetch_item（JSON API）→ 反查类目 → 建 dest → 拉商品页面 HTML 找下载链接列表
+    → 逐个下载到 dest → 下载封面 + 做图标。"""
     log = Signal(str)
     item_done = Signal(dict)
     finished = Signal()
@@ -44,6 +48,33 @@ class LinksWorker(QThread):
                 dest = self.root / cat / f"{iid}_{bc.sanitize(name)}"
                 dup = dest.exists()
                 dest.mkdir(parents=True, exist_ok=True)
+                # R9: 先下载商品本体（之前缺失的核心步骤）
+                downloads = bc.fetch_item_downloads(iid, s)
+                downloaded_files = []
+                if downloads:
+                    for dl in downloads:
+                        fname = dl.get("name") or f"{iid}_{bc.sanitize(name)}.zip"
+                        # 同名文件已存在 → 跳过（避免重复覆盖）
+                        target = dest / fname
+                        if target.exists() and target.stat().st_size > 0:
+                            self.log.emit(f"{iid} 文件已存在: {fname}")
+                            downloaded_files.append(fname)
+                            continue
+                        try:
+                            self.log.emit(
+                                f"{iid} 下载 {fname} ({dl.get('size_text','')})...")
+                            self._download_with_referer(dl["url"], str(target), s,
+                                                         referer_id=iid)
+                            if target.exists() and target.stat().st_size > 0:
+                                downloaded_files.append(fname)
+                                self.log.emit(f"{iid} ✓ {fname}")
+                            else:
+                                self.log.emit(f"{iid} ✕ {fname} 下载失败")
+                        except Exception as e:
+                            self.log.emit(f"{iid} {fname} 下载异常: {e}")
+                else:
+                    self.log.emit(f"{iid} 商品页未找到下载链接（可能需 Cookie 登录）")
+                # 封面 + 图标
                 cover = dest / "cover.jpg"
                 imgs = it.get("images") or []
                 if imgs and not cover.exists():
@@ -59,10 +90,28 @@ class LinksWorker(QThread):
                 self.item_done.emit({
                     "id": iid, "name": name, "cat": cat,
                     "status": "ok" if not dup else "warn", "dup": dup,
+                    "files": downloaded_files,  # R9 新增：记录下载的文件名
                 })
             except Exception as e:
                 self.item_done.emit({"id": iid, "status": "err", "msg": str(e)[:80]})
         self.finished.emit()
+
+    def _download_with_referer(self, url: str, dest_path: str, s, referer_id: str):
+        """下载 BOOTH 文件，需 Referer header 防盗链。"""
+        referer = f"https://booth.pm/ja/items/{referer_id}"
+        r = bc.retry_request(
+            "GET", url, s,
+            headers={**bc.UA, "Referer": referer},
+            timeout=120, stream=True)
+        if not r:
+            raise RuntimeError("网络请求失败")
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(dest_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    f.write(chunk)
 
 
 class LinksPage(BasePage):
@@ -161,11 +210,16 @@ class LinksPage(BasePage):
 
     def on_done(self, d):
         iid = d["id"]
+        # R9 新增：显示下载的文件列表
+        files = d.get("files", [])
+        files_summary = f"  ({len(files)} 文件)" if files else "  ⚠ 无文件"
         if d["status"] == "ok":
-            item = QListWidgetItem(f"{iid} · {d.get('name','')}  →  {d.get('cat','')}")
+            item = QListWidgetItem(
+                f"{iid} · {d.get('name','')}  →  {d.get('cat','')}{files_summary}")
             item.setData(Qt.UserRole, "ok")
         elif d["status"] == "warn":
-            item = QListWidgetItem(f"{iid} · {d.get('name','')}  →  已存在，跳过")
+            item = QListWidgetItem(
+                f"{iid} · {d.get('name','')}  →  已存在，跳过{files_summary}")
             item.setData(Qt.UserRole, "warn")
         else:
             item = QListWidgetItem(f"{iid}  ✕ {d.get('msg','失败')}")

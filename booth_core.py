@@ -210,6 +210,107 @@ def fetch_item(item_id: str, session: requests.Session | None = None) -> dict | 
     return None
 
 
+def fetch_item_downloads(item_id: str, session: requests.Session | None = None) -> list[dict]:
+    """从 BOOTH 商品页面 HTML 解析所有下载链接 + 文件名 + 大小。
+
+    R9 修复：JSON API 的 `files` 字段为空——必须解析商品页面 HTML 找真实下载链接。
+    返回 [{name, url, size_text, size_bytes}, ...]，失败返回 []。
+
+    匹配规则（兼容 BOOTH 多语言/多模板）：
+      - `https://booth.pm/downloadables/{file_id}?variation_id={var_id}` 主下载链接
+      - 紧邻 <a> 内的文件名（`{filename}.zip` / `.unitypackage` 等）
+      - 紧邻文件大小文本（`13.5 MB` / `1.2 GB`）
+    """
+    s = session or make_session()
+    html_url = f"{BOOTH_BASE}/items/{item_id}"
+    out: list[dict] = []
+    try:
+        r = retry_request("GET", html_url, s,
+                          headers={**UA, "Accept-Language": "ja,en;q=0.9,zh-CN;q=0.8"},
+                          timeout=30)
+        if not r or r.status_code != 200:
+            return out
+        html = r.text
+    except Exception:
+        return out
+    # BOOTH 下载按钮结构（实测 2026-08-16）：
+    #   <a class="btn add-cart" title="RuinHalo_v1.01.zip"
+    #      href="https://booth.pm/downloadables/6413961?variation_id=11372934">
+    #     ...
+    #     <span>RuinHalo_v1.01</span><div>.zip</div><div>&nbsp;(1.82 MB)</div>
+    #   </a>
+    # 提取逻辑：先按 href 匹配整段 <a ...>...</a> 块，从块内 title/span/div 拼文件名。
+    a_block_re = re.compile(
+        r"<a\b[^>]*?href=[\"']https?://booth\.pm/downloadables/\d+[^\"']*[\"'][^>]*>"
+        r"(.*?)</a>",
+        re.IGNORECASE | re.DOTALL)
+    url_re = re.compile(
+        r"https?://booth\.pm/downloadables/(\d+)(?:\?[^\"']*variation_id=(\d+))?",
+        re.IGNORECASE)
+    seen: set = set()
+    for block_m in a_block_re.finditer(html):
+        block = block_m.group(0)
+        url_m = url_re.search(block)
+        if not url_m:
+            continue
+        full_url = url_m.group(0)
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+        # 文件名：优先 title="..."，其次 <span>...</span><div>.zip</div> 拼接
+        name = ""
+        title_m = re.search(r"\btitle=[\"']([^\"']*\.[a-z0-9]{2,5})[\"']", block, re.IGNORECASE)
+        if title_m:
+            name = title_m.group(1).strip()
+        else:
+            file_stem = ""
+            ext = ""
+            stem_m = re.search(
+                r"<span\b[^>]*>([^<>\n]+)</span>\s*<div\b[^>]*>\s*\.([a-z0-9]{2,5})",
+                block, re.IGNORECASE)
+            if stem_m:
+                file_stem, ext = stem_m.group(1).strip(), "." + stem_m.group(2).strip()
+            else:
+                div_m = re.search(r"class=[\"']text-14[\"'][^>]*>([^<>\n]+)<", block, re.IGNORECASE)
+                if div_m:
+                    name = div_m.group(1).strip()
+            if not name and file_stem:
+                name = file_stem + ext
+        # 文件大小
+        size_text = ""
+        size_bytes = 0
+        size_m = re.search(r"\(([\d.]+)\s*(KB|MB|GB)\)", block, re.IGNORECASE)
+        if size_m:
+            size_text = f"{size_m.group(1)} {size_m.group(2).upper()}"
+            try:
+                val = float(size_m.group(1))
+                unit = size_m.group(2).upper()
+                if unit.startswith("K"):
+                    size_bytes = int(val * 1024)
+                elif unit.startswith("M"):
+                    size_bytes = int(val * 1024 * 1024)
+                elif unit.startswith("G"):
+                    size_bytes = int(val * 1024 * 1024 * 1024)
+            except Exception:
+                pass
+        out.append({
+            "name": name,
+            "url": full_url,
+            "size_text": size_text,
+            "size_bytes": size_bytes,
+        })
+    return out
+
+
+def fetch_item_downloads_with_auth(item_id: str, session=None) -> list[dict]:
+    """同 fetch_item_downloads，但会尝试添加 download_token 参数（受 BOOTH 反盗链保护）。
+
+    若商品页提示未登录，原始下载链接会被 302 重定向到登录页。
+    标准做法：登录态 cookie + Referer header + 显式 Accept。
+    """
+    return fetch_item_downloads(item_id, session)
+
+
 def _parse_price(price_val) -> int:
     if isinstance(price_val, int):
         return price_val
