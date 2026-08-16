@@ -33,22 +33,8 @@ def _ver_gt(a, b):
     return ta > tb
 
 
-# R10 修复：本体的扩展名（商品文件类型）
-BODY_EXTENSIONS = frozenset({
-    ".zip", ".unitypackage", ".blend", ".fbx", ".obj", ".gltf", ".glb",
-    ".png", ".jpg", ".jpeg", ".pdf", ".mp4", ".wav", ".mp3", ".txt",
-    ".rar", ".7z", ".tar", ".gz", ".bz2",  # 压缩包
-})
-
-
-def has_body(d: Path) -> bool:
-    """R10 检测目录是否含商品本体文件（非三件套）。"""
-    for f in d.iterdir():
-        if not f.is_file():
-            continue
-        if f.suffix.lower() in BODY_EXTENSIONS and f.stat().st_size > 1024:
-            return True
-    return False
+# R10 修复：本体的扩展名（商品文件类型）—— R12 移到 booth_core 供 archive_util 复用
+from booth_core import BODY_EXTENSIONS, has_body
 
 
 def _iter_library_dirs(root: Path):

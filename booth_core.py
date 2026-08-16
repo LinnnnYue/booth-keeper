@@ -51,6 +51,13 @@ CATEGORY_MAP = {
     # R7 修复：主上 BOOTH 根目录现有『3D发型』目录，但 BOOTH 的 ヘアー/髪/ヘア 全部归父级 3Dモデル
     # → 映射从「发型」改成「3D发型」与主上现有目录同前缀，避免新建「发型」目录
     "髪": "3D发型", "ヘアー": "3D发型", "ヘア": "3D发型",
+    # R12 修复：BOOTH 现在用「中日表示」（日文汉字混合）cat_name = "3Dxxx"，
+    # 漏映射会 fallback 父级 "3Dモデル" → "3D模型" 误判。
+    # 补全 BOOTH 子分类中日表示映射：
+    "3D髪型": "3D发型",      # 3D Hair（8674016 等）
+    "3D衣装": "3D服饰",      # 3D Clothing（4689398 等）
+    "3D小道具": "3D道具",     # 3D Prop（7447820 等）
+    "3Dモーション・アニメーション": "3D动作",  # 3D Motion
     "バッジ": "徽章",
     "モーション": "动作", "ギミック": "机关", "リギング": "绑定",
     "テクスチャ": "贴图", "テクスチャ素材": "贴图素材", "シェーダー": "着色器",
@@ -195,6 +202,31 @@ def _normalize_item(d: dict | None) -> dict | None:
         "thumbnail": _thumb_from_json(d),
         "_raw": d,  # 保留 raw 供审计/扩展
     }
+
+
+# R7 修复：本体的扩展名（商品文件类型）—— R12 移到 booth_core 供 archive_util 复用
+BODY_EXTENSIONS = frozenset({
+    ".zip", ".unitypackage", ".blend", ".fbx", ".obj", ".gltf", ".glb",
+    ".png", ".jpg", ".jpeg", ".pdf", ".mp4", ".wav", ".mp3", ".txt",
+    ".rar", ".7z", ".tar", ".gz", ".bz2",  # 压缩包
+})
+
+
+def has_body(d: Path) -> bool:
+    """R10 检测目录是否含商品本体文件（非三件套）。"""
+    for f in d.iterdir():
+        if not f.is_file():
+            continue
+        if f.suffix.lower() in BODY_EXTENSIONS and f.stat().st_size > 1024:
+            return True
+    return False
+
+
+def _iter_library_dirs(root: Path):
+    """迭代 BOOTH 库中所有 ID_xxx 商品目录（rglob 预过滤，性能快）。"""
+    for d in root.rglob("*"):
+        if d.is_dir() and ID_DIR_RE.match(d.name):
+            yield d
 
 
 def fetch_item(item_id: str, session: requests.Session | None = None) -> dict | None:
