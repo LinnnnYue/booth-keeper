@@ -100,7 +100,7 @@ class SettingsPage(BasePage):
         save.clicked.connect(self.save)
         self.root.addWidget(save)
 
-        # R8：支持作者（爱发电 + 微信收款码）
+        # R8：支持作者（爱发电 + 微信赞赏码）
         self.hline()
         self.root.addSpacing(8)
         support_title = QLabel("☕ 支持作者")
@@ -155,7 +155,7 @@ class SettingsPage(BasePage):
         gh_label.setStyleSheet("font-size: 13px;")
         info_col.addWidget(gh_label)
 
-        wechat_hint = QLabel("微信扫一扫（左）")
+        wechat_hint = QLabel("微信扫码赞赏（左）")
         wechat_hint.setObjectName("muted")
         wechat_hint.setStyleSheet("font-size: 11px;")
         info_col.addWidget(wechat_hint)
