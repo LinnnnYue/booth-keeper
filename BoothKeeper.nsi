@@ -9,7 +9,7 @@ SetCompressor /SOLID lzma
 !define APP_VERSION "1.3.4"
 !define APP_PUBLISHER "小凛酱"
 !define APP_EXE "BoothKeeper.exe"
-!define APP_ICON "D:\Lin_Agent\WB-WorkSpace\BoothKeeper\assets\app_icon.ico"
+!define APP_ICON "D:\Lin_Agent\WB-WorkSpace\BoothKeeper\assets\art\scene-reimu-egg-icon.ico"
 
 ; R10：终结旧进程，让 BoothKeeper 运行时也能直接安装更新
 ; 用 tasklist + taskkill 命令（NSIS 自带 nsExec，无插件依赖）

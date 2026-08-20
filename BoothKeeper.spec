@@ -37,5 +37,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=r'D:\Lin_Agent\WB-WorkSpace\BoothKeeper\assets\app_icon.ico',
+    icon=r'D:\Lin_Agent\WB-WorkSpace\BoothKeeper\assets\art\scene-reimu-egg-icon.ico',
 )

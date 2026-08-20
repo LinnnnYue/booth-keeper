@@ -4,7 +4,7 @@
 >
 > 本软件的诞生契机：主上之前只做了基于 Agent 的 Booth 技能，但它局限在有 Agent / 有钱买 Token 的环境，**没法独立运行**。所以这次做了一个免费、开箱即用的桌面版——一个**鸡蛋**软件（自家头像也是鸡蛋，希望主上的 BOOTH 库也能像鸡蛋一样圆润滚入正确目录 🥚）。
 
-![应用图标](assets/app_icon.png)
+![应用图标](assets/art/scene-reimu-egg.png)
 
 PySide6 · Python 3.13 · 单 exe / 安装包 / zip 解压即用 · 无任何云端依赖
 
