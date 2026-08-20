@@ -23,12 +23,17 @@ def _looks_like_path(s: str) -> bool:
     return False
 
 
-def _extract_basename(s: str) -> str:
-    """从文件路径/file URL/裸字符串提 basename + 剥扩展名。"""
+def _extract_file_path(s: str) -> str:
+    """从 file URL / 文件路径提取完整路径（不剥扩展名）。"""
     s = s.strip()
-    # file:// URL
     if s.startswith("file://"):
         s = unquote(s[len("file://"):])
+    return s.strip()
+
+
+def _extract_basename(s: str) -> str:
+    """从文件路径/file URL/裸字符串提 basename + 剥扩展名。"""
+    s = _extract_file_path(s)
     # 取最后一段
     s = s.replace("\\", "/").rstrip("/")
     name = s.split("/")[-1] if "/" in s else s
@@ -143,6 +148,7 @@ class SearchPage(BasePage):
         self.list.setObjectName("obs")
         self.list.setMinimumHeight(200)
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.list.itemDoubleClicked.connect(self.open_in_browser)
         self.root.addWidget(self.list)
 
         self.bar = QProgressBar()
@@ -214,6 +220,13 @@ class SearchPage(BasePage):
             f"用 {used} 个候选搜到 {len(items)} 条（合并去重，显示前 20）。建议人工核对后归档。")
         self.btn_archive.setEnabled(len(items) > 0)
 
+    def open_in_browser(self, item):
+        """双击搜索条目 → 浏览器打开 BOOTH 商品页核对。"""
+        import webbrowser
+        iid = item.data(Qt.UserRole)
+        if iid:
+            webbrowser.open(f"https://booth.pm/ja/items/{iid}")
+
     def archive(self):
         sel = self.list.selectedItems()
         if not sel:
@@ -234,6 +247,21 @@ class SearchPage(BasePage):
             else:
                 skipped.append(iid)
 
+        # R15 兜底：BOOTH 库内没找到源 → 尝试用输入框里的原始文件路径做 move_source
+        # （主上从 Downloads 拖文件进来搜索再归档，文件不在 BOOTH 库里，需要从原位置搬过来）
+        if skipped and not moves:
+            raw_input = self.edit.toPlainText().strip()
+            if raw_input and _looks_like_path(raw_input):
+                file_path = _extract_file_path(raw_input)
+                # 取第一行有效文件路径
+                for line in file_path.splitlines():
+                    line = line.strip()
+                    if line and Path(line).exists():
+                        for iid in skipped:
+                            moves[iid] = line
+                        skipped = []
+                        break
+
         # 提示用户：哪些找到了源、哪些没找到
         if skipped and not moves:
             ThemeDialog.information(self, "未找到源文件",
@@ -242,9 +270,14 @@ class SearchPage(BasePage):
                 f"如需移动，可在「拖拽分类」页直接拖入源文件。")
             return
 
+        # 只归档有源路径的 ID（没有 move_source 的 ID 不应进入归档，否则只建空目录）
+        archive_ids = [iid for iid in ids if iid in moves]
+        if not archive_ids:
+            return
+
         self._done = []
         self.bar.setValue(0)
-        self.archiver = ArchiveWorker(ids, cfg["booth_root"], cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+        self.archiver = ArchiveWorker(archive_ids, cfg["booth_root"], cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
         self.archiver.moves = moves  # 注入源路径映射
         self.archiver.item_done.connect(self.on_archive_done)
         self.archiver.finished.connect(self.on_finished)
