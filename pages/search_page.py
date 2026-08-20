@@ -4,11 +4,49 @@ from pathlib import Path
 from urllib.parse import unquote
 from PySide6.QtWidgets import (QPlainTextEdit, QPushButton, QListWidget, QListWidgetItem,
     QHBoxLayout, QLabel, QProgressBar, QFrame)
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from pages.base import BasePage
 from pages.notify import ThemeDialog
 import booth_core as bc
 from archive_util import archive_item
+
+
+class DroppableTextEdit(QPlainTextEdit):
+    """实验检索输入框：显式接受文件/文件夹拖放，把本地路径以 file:// 形式填入输入框。
+    不依赖 QPlainTextEdit 默认拖放（真机对目录/多文件可能表现不稳定）。"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, e: QDragEnterEvent):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+        else:
+            super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+        else:
+            super().dragMoveEvent(e)
+
+    def dropEvent(self, e: QDropEvent):
+        md = e.mimeData()
+        if md.hasUrls():
+            paths = []
+            for u in md.urls():
+                loc = u.toLocalFile()
+                if loc:
+                    # 标准化为 file:///X:/... 形式（与 Qt 默认一致）
+                    paths.append(QUrl.fromLocalFile(loc).toString())
+            if paths:
+                cur = self.toPlainText().rstrip()
+                merged = (cur + "\n" + "\n".join(paths)).strip() if cur else "\n".join(paths)
+                self.setPlainText(merged)
+                e.acceptProposedAction()
+                return
+        super().dropEvent(e)
 
 
 def _looks_like_path(s: str) -> bool:
@@ -125,7 +163,7 @@ class SearchPage(BasePage):
         self.items = []
         self._done = []
 
-        self.edit = QPlainTextEdit()
+        self.edit = DroppableTextEdit()
         self.edit.setPlaceholderText(
             "粘贴文件名、关键词或文件路径（自动提取 basename）。\n"
             "示例：star_eclipse_halo_1.0.0  或  file:///G:/.../star_eclipse_halo_1.0.0.zip")
