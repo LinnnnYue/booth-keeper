@@ -62,11 +62,15 @@ def _looks_like_path(s: str) -> bool:
 
 
 def _extract_file_path(s: str) -> str:
-    """从 file URL / 文件路径提取完整路径（不剥扩展名）。"""
+    """从 file URL / 文件路径提取完整本地路径（不剥扩展名）。
+    QUrl.toLocalFile 正确处理 file:///X:/...（三斜杠），避免残留前导 / 导致 exists() 失效。"""
     s = s.strip()
     if s.startswith("file://"):
-        s = unquote(s[len("file://"):])
-    return s.strip()
+        try:
+            return QUrl(s).toLocalFile()
+        except Exception:
+            pass
+    return s
 
 
 def _extract_basename(s: str) -> str:
@@ -288,23 +292,26 @@ class SearchPage(BasePage):
         # R15 兜底：BOOTH 库内没找到源 → 尝试用输入框里的原始文件路径做 move_source
         # （主上从 Downloads 拖文件进来搜索再归档，文件不在 BOOTH 库里，需要从原位置搬过来）
         if skipped and not moves:
-            raw_input = self.edit.toPlainText().strip()
-            if raw_input and _looks_like_path(raw_input):
-                file_path = _extract_file_path(raw_input)
-                # 取第一行有效文件路径
-                for line in file_path.splitlines():
-                    line = line.strip()
-                    if line and Path(line).exists():
-                        for iid in skipped:
-                            moves[iid] = line
-                        skipped = []
-                        break
+            raw_input = self.edit.toPlainText()
+            found = None
+            for line in raw_input.splitlines():
+                line = line.strip()
+                if not line or not _looks_like_path(line):
+                    continue
+                p = Path(_extract_file_path(line))
+                if p.exists():
+                    found = str(p)
+                    break
+            if found:
+                for iid in skipped:
+                    moves[iid] = found
+                skipped = []
 
         # 提示用户：哪些找到了源、哪些没找到
         if skipped and not moves:
             ThemeDialog.information(self, "未找到源文件",
                 f"在 BOOTH 根（{cfg['booth_root']}）下未找到任何待归档商品对应的源文件/目录。\n\n"
-                f"未命中 ID：{', '.join(skipped)}\n\n"
+                f"未命中 ID：{', '.join(map(str, skipped))}\n\n"
                 f"如需移动，可在「拖拽分类」页直接拖入源文件。")
             return
 
