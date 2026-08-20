@@ -9,7 +9,7 @@ from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from pages.base import BasePage
 from pages.notify import ThemeDialog
 import booth_core as bc
-from archive_util import archive_item
+from archive_util import archive_item, find_existing_source_in_library
 import os, time as _time
 
 _LOG_PATH = os.path.join(os.path.expanduser("~"), ".boothkeeper_archive_debug.log")
@@ -301,7 +301,7 @@ class SearchPage(BasePage):
         for iid in ids:
             it = next((x for x in self.items if str(x.get("id")) == str(iid)), None)
             name = (it or {}).get("name", "")
-            src = bc.find_existing_source_in_library(str(iid), name, cfg["booth_root"])
+            src = find_existing_source_in_library(str(iid), name, cfg["booth_root"])
             _alog(f"find_source({iid}, {name!r}, {cfg['booth_root']!r}) → {src!r}")
             if src:
                 moves[iid] = src
