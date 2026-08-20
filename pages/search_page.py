@@ -10,6 +10,15 @@ from pages.base import BasePage
 from pages.notify import ThemeDialog
 import booth_core as bc
 from archive_util import archive_item
+import os, time as _time
+
+_LOG_PATH = os.path.join(os.path.expanduser("~"), ".boothkeeper_archive_debug.log")
+def _alog(msg):
+    try:
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{_time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
 
 
 class DroppableTextEdit(QPlainTextEdit):
@@ -137,16 +146,23 @@ class ArchiveWorker(QThread):
         self.moves = {}  # R7：id → BOOTH 库内源路径（由 SearchPage.archive 注入）
 
     def run(self):
+        _alog(f"ArchiveWorker.run() START ids={self.ids} root={self.root!r} moves={self.moves}")
         s = bc.make_session(self.cookie)
         if self.proxy:
             s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
         for iid in self.ids:
-            # R7 关键：把找到的源路径作为 move_source 传入；
-            # archive_item 内部会尝试移动并清理空目录
             src = self.moves.get(iid)
-            r = archive_item(iid, self.root, s, move_source=src)
+            _alog(f"  archive_item({iid}, root={self.root!r}, move_source={src!r})")
+            try:
+                r = archive_item(iid, self.root, s, move_source=src)
+            except Exception as e:
+                _alog(f"  archive_item EXCEPTION: {type(e).__name__}: {e}")
+                import traceback; _alog(f"  {traceback.format_exc()}")
+                r = {"status": "err", "msg": str(e)}
             r["id"] = iid
+            _alog(f"  result: status={r.get('status')} dest={r.get('dest','')!r} msg={r.get('msg','')!r}")
             self.item_done.emit(r)
+        _alog("ArchiveWorker.run() FINISHED")
         self.finished.emit()
 
 
@@ -270,65 +286,78 @@ class SearchPage(BasePage):
             webbrowser.open(f"https://booth.pm/ja/items/{iid}")
 
     def archive(self):
+        _alog("=== archive() called ===")
         sel = self.list.selectedItems()
+        _alog(f"selectedItems count={len(sel)} ids={[it.data(Qt.UserRole) for it in sel]}")
         if not sel:
+            _alog("NO SELECTION → dialog + return")
             ThemeDialog.information(self, "提示", "请先选择要归档的商品（单击选中）。")
             return
         ids = [it.data(Qt.UserRole) for it in sel]
         cfg = self.main.config
         # R7 修复：每个待归档 ID 在 BOOTH 根全库广搜源文件/目录，命中即作为 move_source
-        # （避免主上反馈「点归档选中卡4%没挪走」——之前 search archive 没传 move_source）
         moves = {}
         skipped = []
         for iid in ids:
             it = next((x for x in self.items if str(x.get("id")) == str(iid)), None)
             name = (it or {}).get("name", "")
             src = bc.find_existing_source_in_library(str(iid), name, cfg["booth_root"])
+            _alog(f"find_source({iid}, {name!r}, {cfg['booth_root']!r}) → {src!r}")
             if src:
                 moves[iid] = src
             else:
                 skipped.append(iid)
+        _alog(f"after find: moves={moves} skipped={skipped}")
 
-        # R15 兜底：BOOTH 库内没找到源 → 尝试用输入框里的原始文件路径做 move_source
-        # （主上从 Downloads 拖文件进来搜索再归档，文件不在 BOOTH 库里，需要从原位置搬过来）
+        # R15 兜底
         if skipped and not moves:
             raw_input = self.edit.toPlainText()
+            _alog(f"fallback: raw_input={raw_input!r}")
             found = None
             for line in raw_input.splitlines():
                 line = line.strip()
                 if not line or not _looks_like_path(line):
+                    _alog(f"  skip line: {line!r} looks={_looks_like_path(line) if line else 'N/A'}")
                     continue
                 p = Path(_extract_file_path(line))
-                if p.exists():
+                exists = p.exists()
+                _alog(f"  line={line!r} → path={str(p)!r} exists={exists}")
+                if exists:
                     found = str(p)
                     break
+            _alog(f"fallback found={found!r}")
             if found:
                 for iid in skipped:
                     moves[iid] = found
                 skipped = []
+        _alog(f"pre-join: moves={moves} skipped={skipped}")
 
-        # 提示用户：哪些找到了源、哪些没找到
         if skipped and not moves:
+            _alog("NO MOVES → '未找到源文件' dialog + return")
             ThemeDialog.information(self, "未找到源文件",
                 f"在 BOOTH 根（{cfg['booth_root']}）下未找到任何待归档商品对应的源文件/目录。\n\n"
                 f"未命中 ID：{', '.join(map(str, skipped))}\n\n"
                 f"如需移动，可在「拖拽分类」页直接拖入源文件。")
             return
 
-        # 只归档有源路径的 ID（没有 move_source 的 ID 不应进入归档，否则只建空目录）
         archive_ids = [iid for iid in ids if iid in moves]
+        _alog(f"archive_ids={archive_ids}")
         if not archive_ids:
+            _alog("archive_ids empty → silent return")
             return
 
         self._done = []
         self.bar.setValue(0)
         self.archiver = ArchiveWorker(archive_ids, cfg["booth_root"], cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
-        self.archiver.moves = moves  # 注入源路径映射
+        self.archiver.moves = moves
         self.archiver.item_done.connect(self.on_archive_done)
         self.archiver.finished.connect(self.on_finished)
+        _alog(f"starting ArchiveWorker with ids={archive_ids} moves={moves}")
         self.archiver.start()
+        _alog("ArchiveWorker.start() called")
 
     def on_archive_done(self, r):
+        _alog(f"on_archive_done: status={r.get('status')} id={r.get('id')} name={r.get('name','')!r} dest={r.get('dest','')!r} msg={r.get('msg','')!r}")
         self._done.append(r)
         if r["status"] == "ok":
             src_note = "（含源文件搬移）" if r.get("dest") and "moved" in r else ""
@@ -344,6 +373,7 @@ class SearchPage(BasePage):
         self.bar.setValue(int(total / denom * 100))
 
     def on_finished(self):
+        _alog(f"on_finished: done_count={len(self._done)} results={[{k:v for k,v in r.items() if k!='images'} for r in self._done]}")
         ok = sum(1 for r in self._done if r["status"] == "ok")
         self.main.set_status(f"检索归档完成：{ok} 成功 / {len(self._done)} 总计")
 
