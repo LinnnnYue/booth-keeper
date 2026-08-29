@@ -78,17 +78,26 @@ class LinksWorker(QThread):
                             self.log.emit(f"{iid} {fname} 下载异常: {e}")
                 else:
                     self.log.emit(f"{iid} 商品页未找到下载链接（可能需 Cookie 登录）")
-                # 封面 + 图标
+                # 封面 + 图标（R16：封面属非关键资源，失败不阻塞归档，
+                # 但必须明确告知，避免用户以为三件套已齐全）
                 cover = dest / "cover.jpg"
                 imgs = it.get("images") or []
-                if imgs and not cover.exists():
+                cover_ok = cover.exists()
+                if imgs and not cover_ok:
                     try:
                         bc.download_cover(imgs[0]["original"], str(dest), s)
+                        cover_ok = cover.exists()
                     except Exception as e:
                         self.log.emit(f"{iid} 封面失败: {e}")
+                if not cover_ok:
+                    self.log.emit(
+                        f"{iid} ⚠ 封面缺失 → 三件套不完整"
+                        f"（可到「目录巡检」页点『修复三件套』补齐）")
+                icon_ok = False
                 if cover.exists():
                     try:
                         bc.make_folder_icon(cover, dest)
+                        icon_ok = True
                     except Exception as e:
                         self.log.emit(f"{iid} 图标失败: {e}")
                 # R10: status 区分 "ok"/"warn"
@@ -109,6 +118,7 @@ class LinksWorker(QThread):
                     "status": status, "dup": dup,
                     "files": downloaded_files,
                     "missing": missing_files,
+                    "cover_ok": cover_ok, "icon_ok": icon_ok,
                     "is_backfill": dup and downloaded_files,  # R10: 标记是补全而非新建
                 })
             except Exception as e:

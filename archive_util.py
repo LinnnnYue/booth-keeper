@@ -258,14 +258,19 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
 
     cover = dest / "cover.jpg"
     imgs = it.get("images") or []
-    if imgs and not cover.exists():
+    cover_ok = cover.exists()
+    if imgs and not cover_ok:
         try:
             bc.download_cover(imgs[0]["original"], str(dest), session)
+            cover_ok = cover.exists()
         except Exception:
-            pass
+            cover_ok = False
+    icon_ok = False
     if cover.exists():
         try:
             bc.make_folder_icon(cover, dest)
+            icon_ok = True
         except Exception:
-            pass
-    return {"status": "ok", "name": name, "cat": cat, "id": iid, "dest": str(dest)}
+            icon_ok = False
+    return {"status": "ok", "name": name, "cat": cat, "id": iid, "dest": str(dest),
+            "cover_ok": cover_ok, "icon_ok": icon_ok}

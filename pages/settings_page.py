@@ -65,6 +65,8 @@ class SettingsPage(BasePage):
         root_row.addWidget(self.edit_root, 1)
         root_row.addWidget(self.btn_browse)
         self.root.addLayout(root_row)
+        # R16：改动即存（QLineEdit 的 editingFinished 不会因 setText 触发，安全）
+        self.edit_root.editingFinished.connect(self._autosave)
 
         # 代理
         self.add_label("网络代理（访问 Booth 多数需代理）")
@@ -75,6 +77,7 @@ class SettingsPage(BasePage):
         self.edit_proxy = QLineEdit(self.main.config["proxy_url"])
         self.edit_proxy.setEnabled(bool(self.main.config["proxy"]))
         self.root.addWidget(self.edit_proxy)
+        self.edit_proxy.editingFinished.connect(self._autosave)
 
         # Cookie
         self.add_label("Booth Cookie（可选，访问受限商品）")
@@ -82,12 +85,15 @@ class SettingsPage(BasePage):
         self.edit_cookie.setEchoMode(QLineEdit.Password)
         self.edit_cookie.setPlaceholderText("留空即可，仅在受限时填写")
         self.root.addWidget(self.edit_cookie)
+        self.edit_cookie.editingFinished.connect(self._autosave)
 
         # R10：自动检查更新
         self.add_label("自动检查更新（启动时）")
         self.chk_auto_update = QCheckBox("启动 BoothKeeper 时自动检查新版本")
         self.chk_auto_update.setChecked(bool(self.main.config.get("auto_check_update", True)))
         self.root.addWidget(self.chk_auto_update)
+        # connect 放在 setChecked 之后，避免初始化时误触发自动保存
+        self.chk_auto_update.stateChanged.connect(self._autosave)
 
         self.btn_check_update = QPushButton("立即检查更新")
         self.btn_check_update.setObjectName("secondary")
@@ -225,6 +231,8 @@ class SettingsPage(BasePage):
 
     def on_proxy_toggle(self, state):
         self.edit_proxy.setEnabled(state == 2)
+        # R16：代理开关变化立即落盘，下次启动保持
+        self._autosave()
 
     def browse_root(self):
         d = QFileDialog.getExistingDirectory(self, "选择 BOOTH 根目录",
@@ -232,12 +240,25 @@ class SettingsPage(BasePage):
         if d:
             self.edit_root.setText(d)
 
-    def save(self):
+    def _collect(self):
+        """把控件值写回 config（不落盘、不重刷主题）。"""
         self.main.config["booth_root"] = self.edit_root.text().strip()
         self.main.config["proxy"] = self.chk_proxy.isChecked()
         self.main.config["proxy_url"] = self.edit_proxy.text().strip()
         self.main.config["cookie"] = self.edit_cookie.text().strip()
         self.main.config["auto_check_update"] = self.chk_auto_update.isChecked()
+
+    def _autosave(self):
+        """R16：改动即存。避免用户改完忘点『保存设置』，重开后回到默认值。"""
+        try:
+            self._collect()
+            self.main.save_config()
+            self.main.set_status("设置已自动保存")
+        except Exception:
+            pass
+
+    def save(self):
+        self._collect()
         self.main.save_config()
         self.main.apply_theme()
         self.main.set_status("设置已保存")

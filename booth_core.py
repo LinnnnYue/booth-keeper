@@ -137,15 +137,20 @@ def make_session(cookie: str = "", ua: str = "") -> requests.Session:
     return s
 
 
-def retry_request(method: str, url: str, session: requests.Session, **kwargs):
+def retry_request(method: str, url: str, session: requests.Session,
+                  retries: int | None = None, **kwargs):
     """transport 错误指数退避重试（ConnectionError/Timeout/ChunkedEncodingError）。
-    HTTP 状态码留给调用方判断（404 页可优雅处理而非重试）。"""
-    for attempt in range(1, MAX_RETRIES + 1):
+    HTTP 状态码留给调用方判断（404 页可优雅处理而非重试）。
+
+    R16：新增 retries 参数——非关键请求（如封面下载）应快速失败，
+    避免 timeout=60 × 3 次 导致单商品卡 3 分钟。"""
+    n = int(retries) if retries else MAX_RETRIES
+    for attempt in range(1, n + 1):
         try:
             return session.request(method, url, **kwargs)
         except (requests.ConnectionError, requests.Timeout,
                 requests.exceptions.ChunkedEncodingError) as e:
-            if attempt < MAX_RETRIES:
+            if attempt < n:
                 time.sleep(attempt * 2)
             else:
                 raise
@@ -403,7 +408,16 @@ def _pximg_full(url: str, size: str = "1000x1000") -> str:
 
 
 def download_cover(thumb_url: str, dest_dir: Path | str | None = None,
-                   session: requests.Session | None = None) -> Path | None:
+                   session: requests.Session | None = None,
+                   timeout: int = 20, retries: int = 2) -> Path | None:
+    """下载封面到 dest_dir/cover.jpg。
+
+    R16：
+      - 默认 timeout=20 / retries=2（原 60/3）。封面属非关键资源，代理抖动时
+        原参数会让单个商品卡住 ~186 秒，批量归档直接卡死。
+      - 代理失败自动降级直连重试一次：booth.pximg.net 是图片 CDN，
+        不少代理节点只放行 booth.pm 而卡住 pximg，直连反而能通。
+      - 失败后本体仍算归档成功，三件套可用巡检页「修复三件套」补齐。"""
     if not thumb_url:
         return None
     url = thumb_url  # 对齐 G 盘主源：original 全尺寸图直接下载，_pximg_full 对 _base_resized 误插 /c/size/ 会 403
@@ -411,19 +425,39 @@ def download_cover(thumb_url: str, dest_dir: Path | str | None = None,
     # Windows 下若传 /tmp/... 会被解析为当前盘符根目录，不存在；
     # 未传目录时回退到系统临时目录。
     dest_dir = Path(dest_dir) if dest_dir else Path(tempfile.gettempdir())
-    try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        r = retry_request("GET", url, s,
-                          headers={**UA, "Referer": "https://booth.pm/"}, timeout=60)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    cover = dest_dir / "cover.jpg"
+
+    def _fetch(sess, n_retry):
+        r = retry_request("GET", url, sess,
+                          headers={**UA, "Referer": "https://booth.pm/"},
+                          timeout=timeout, retries=n_retry)
         if not r:
             return None
         r.raise_for_status()
-        cover = dest_dir / "cover.jpg"
         cover.write_bytes(r.content)
         return cover
+
+    # ① 按调用方 session（可能带代理）尝试
+    try:
+        if _fetch(s, retries):
+            return cover
     except Exception as e:
-        print(f"  封面下载失败: {e}")
-        return None
+        print(f"  封面下载失败(代理): {e}")
+
+    # ② 降级：临时摘掉代理直连再试一次
+    saved = dict(s.proxies)
+    if saved:
+        try:
+            s.proxies.clear()
+            if _fetch(s, 1):
+                print("  封面已通过直连兜底下载成功")
+                return cover
+        except Exception as e:
+            print(f"  封面直连兜底也失败: {e}")
+        finally:
+            s.proxies.update(saved)
+    return None
 
 
 # ── 文件名清洗 ───────────────────────────────────────────────────
