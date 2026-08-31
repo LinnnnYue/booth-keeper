@@ -16,6 +16,8 @@ import io
 import time
 import ctypes
 import tempfile
+import zipfile
+import tarfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -249,6 +251,214 @@ def fetch_item(item_id: str, session: requests.Session | None = None) -> dict | 
     except Exception:
         pass
     return None
+
+
+def probe_reachable(session: requests.Session | None = None,
+                    timeout: int = 15) -> tuple[bool, str]:
+    """连通性探针：确认 BOOTH 当前可达（网络/代理正常）。
+
+    用 BOOTH 首页做探测端点。返回 (可达, 说明)。
+    主上的严谨要求：判定「已下架」前必须先确认网络可达，
+    否则 404 可能是网络/代理故障伪装的，不是真下架。"""
+    s = session or make_session()
+    try:
+        r = retry_request("GET", BOOTH_BASE + "/", s, headers=UA,
+                          timeout=timeout, retries=1)
+        if r is None:
+            return False, "请求无响应"
+        return r.status_code < 500, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:60]}"
+
+
+def probe_item_http(item_id: str, session: requests.Session | None = None,
+                    timeout: int = 20) -> int | None:
+    """探商品页 HTTP 状态码。None = 网络层异常（超时/代理断/连接失败）。
+
+    与 fetch_item 的区别：无论如何都返回真实状态（200/404/其他），
+    不把「网络坏了」和「商品下架」混为一谈。"""
+    s = session or make_session()
+    try:
+        r = retry_request("GET", f"{BOOTH_BASE}/items/{item_id}", s,
+                          headers={**UA, "Accept-Language": "ja;q=0.9"},
+                          timeout=timeout, retries=1)
+        return r.status_code if r is not None else None
+    except Exception:
+        return None
+
+
+def classify_item_state(item_id: str,
+                        session: requests.Session | None = None,
+                        probe: bool = True) -> tuple[str, str]:
+    """判定商品当前状态，返回 (state, 原因)。
+
+    state 三态：
+      - "ok"      可正常访问
+      - "delisted" 真·已下架（BOOTH 可达 + 商品页确实 404）
+      - "unknown"  无法判定（网络/代理异常，不妄断下架）
+
+    严格逻辑（主上要求）：只有「连通性探针通过 + 商品 404」才判定已下架；
+    网络不可达一律 unknown，避免把网络故障误判为商品下架。"""
+    s = session or make_session()
+    if probe:
+        ok, why = probe_reachable(s, timeout=15)
+        if not ok:
+            return "unknown", f"BOOTH 当前不可达（{why}），无法判定是否下架"
+    code = probe_item_http(item_id, s, timeout=20)
+    if code == 200:
+        return "ok", "商品页可正常访问"
+    if code == 404:
+        return "delisted", "商品页 404 且 BOOTH 可达 → 确为已下架"
+    if code is None:
+        return "unknown", "商品页请求异常（超时/代理断），无法判定"
+    return "unknown", f"商品页返回 HTTP {code}（非 404），状态不明"
+
+
+def probe_package(path: str | Path,
+                  max_upkg_bytes: int = 80 * 1024 * 1024) -> dict:
+    """从本地 zip / unitypackage / 文件夹提取检索信号（R17 多信号）。
+
+    返回:
+      {
+        "kind": "zip" | "upkg" | "dir" | "none",
+        "outer": 外层文件名去扩展的清洗名（原始信号）,
+        "authors": [作者/社团名候选],   # 包内 Assets 第一层（BLVK, SNOW_XTAL 等）
+        "names":   [商品名候选],         # 包内第二层 + 顶层文件名（NailRing, CatHeart_acc）
+        "count": 解析到的条目数,
+      }
+
+    动机：unitypackage 路径 Assets/{作者}/{商品}/... 天然拆开作者与商品；
+    BOOTH 搜索时「作者 + 商品」组合命中率远高于单独商品名。"""
+    p = Path(path)
+    outer = sanitize_filename(str(p.stem)).strip()
+    authors, names, count = [], [], 0
+
+    def _feed_upkg(data: bytes):
+        nonlocal count
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                for m in tf:
+                    if not m.isfile() or os.path.basename(m.name) != "pathname":
+                        continue
+                    f = tf.extractfile(m)
+                    if not f:
+                        continue
+                    s = f.read().decode("utf-8", "ignore").strip()
+                    parts = [x for x in s.replace("\\", "/").split("/") if x]
+                    idx = 1 if parts and parts[0].lower() == "assets" and len(parts) > 1 else 0
+                    if len(parts) > idx:
+                        a = sanitize_filename(parts[idx]).strip()
+                        if a and len(a) >= 2:
+                            authors.append(a)
+                    if len(parts) > idx + 1:
+                        nm = sanitize_filename(parts[idx + 1]).strip()
+                        if nm and len(nm) >= 2:
+                            names.append(nm)
+                        count += 1
+        except Exception:
+            pass
+
+    try:
+        if p.is_dir():
+            kind = "dir"
+            for child in sorted(p.iterdir()):
+                if child.is_file():
+                    nm = sanitize_filename(child.stem).strip()
+                    if nm and len(nm) >= 2:
+                        names.append(nm)
+                    if child.suffix.lower() == ".unitypackage" and child.stat().st_size <= max_upkg_bytes:
+                        try:
+                            _feed_upkg(child.read_bytes())
+                        except Exception:
+                            pass
+                elif child.is_dir():
+                    a = sanitize_filename(child.name).strip()
+                    if a and len(a) >= 2:
+                        authors.append(a)
+        elif p.suffix.lower() == ".zip":
+            kind = "zip"
+            with zipfile.ZipFile(p) as z:
+                for n in z.namelist()[:400]:
+                    parts = [x for x in n.replace("\\", "/").split("/") if x]
+                    base = sanitize_filename(os.path.splitext(parts[-1])[0]).strip() if parts else ""
+                    if base and len(base) >= 2 and not base.startswith("__MACOSX"):
+                        if len(parts) == 1:
+                            names.append(base)
+                        else:
+                            authors.append(base)  # 顶层目录名（作者/通用目录）
+                    if n.lower().endswith(".unitypackage"):
+                        try:
+                            if z.getinfo(n).file_size <= max_upkg_bytes:
+                                _feed_upkg(z.read(n))
+                        except Exception:
+                            pass
+        elif p.suffix.lower() == ".unitypackage":
+            kind = "upkg"
+            if p.stat().st_size <= max_upkg_bytes:
+                _feed_upkg(p.read_bytes())
+        else:
+            kind = "none"
+    except Exception:
+        kind = "none"
+
+    # 去重保留顺序；过滤常见通用目录名
+    DROP = {"textures", "material", "materials", "prefab", "prefabs", "fbx",
+            "animation", "animations", "shader", "shaders", "psd", "scripts",
+            "resources", "assets", "models", "docs", "readme", "sample"}
+    authors = list(dict.fromkeys(a for a in authors if a.lower() not in DROP))
+    names = list(dict.fromkeys(n for n in names if n.lower() not in DROP))
+    return {"kind": kind, "outer": outer, "authors": authors[:6],
+            "names": names[:8], "count": count}
+
+
+def build_search_queries(path: str | Path) -> list[str]:
+    """由本地文件/文件夹生成搜索候选（顺序敏感，首个最可能命中）。"""
+    sig = probe_package(path)
+    cands, seen = [], set()
+    outer = sig["outer"]
+
+    def add(q):
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            cands.append(q)
+
+    if outer:
+        add(outer)
+    for n in sig["names"]:
+        add(n)
+    for a in sig["authors"]:
+        for n in sig["names"]:
+            if a.lower() in n.lower():
+                continue    # 名字已含作者（如 'BLVK NailRing'），避免 'BLVK BLVK NailRing'
+            add(f"{a} {n}")  # 作者+商品 组合（最强过滤）
+    for a in sig["authors"]:
+        add(a)
+    # 兜底：sanitize_query 老路（驼峰拆词 / 日文主体 / 去版本号）
+    for q in sanitize_query(outer) if outer else []:
+        add(q)
+    return cands[:8]
+
+
+def rank_search_results(items: list[dict], sig: dict | None) -> list[dict]:
+    """对搜索结果按输入信号打分排序（名称相似度 + 作者/店名命中加权）。
+
+    依据 2026-08-31 全量学习：包内 Assets 首层目录多为作者名，
+    结果店名/品牌命中作者名 → 强证据。返回 items 原样增 score 字段并降序。"""
+    sig = sig or {}
+    refs = [x for x in ([sig.get("outer", "")] + list(sig.get("names", []) or [])) if x]
+    authors = list(sig.get("authors", []) or [])
+    scored = []
+    for it in items or []:
+        name = it.get("name", "")
+        s = max((name_similarity(name, r) for r in refs), default=0.0)
+        shop = f"{it.get('shop','')} {it.get('brand','')}"
+        if authors and any(a.lower() in shop.lower() for a in authors):
+            s = min(1.0, s + 0.25)
+        it["score"] = round(s, 2)
+        scored.append(it)
+    scored.sort(key=lambda x: -x.get("score", 0))
+    return scored
 
 
 def fetch_item_downloads(item_id: str, session: requests.Session | None = None) -> list[dict]:
@@ -514,6 +724,38 @@ def extract_version_tag(filename: str) -> str:
     if m2:
         return f"Ver_{m2.group(1)}"
     return ""
+
+
+def _title_tokens(name: str) -> list[str]:
+    """商品名/文件名 → token 列表（清洗 + 拆词）。
+
+    R17：在拉丁字母与非英数字（中日韩/假名）边界拆词——
+    'CatHeartアクセサリー' → [catheart, アクセサリー]，避免 token 整段失配。"""
+    s = name or ""
+    # 日文引号「」『』→ 空格（保留内容，只拆词；勿用「去内容」正则删掉商品名）
+    s = s.replace("「", " ").replace("」", " ").replace("『", " ").replace("』", " ")
+    s = re.sub(r"[（(\[【].*?[)）\]】]", " ", s)
+    s = re.sub(r"[\u2764\U0001F300-\U0001FAFF\U0001F000-\U0001FAFF]", "", s)
+    s = re.sub(r"(?:v(?:er(?:sion)?)?\.?|ver\.?)\s*\d+(?:\.\d+)*", " ", s, flags=re.I)
+    s = re.sub(r"\d+\.\d+(?:\.\d+)*(?:\s*[_.-])?", " ", s)
+    if re.search(r"[A-Za-z]", s) and re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", s):
+        s = re.sub(r"([A-Za-z])([\u3040-\u30ff\u4e00-\u9fff])", r"\1 \2", s)
+        s = re.sub(r"([\u3040-\u30ff\u4e00-\u9fff])([A-Za-z])", r"\1 \2", s)
+    s = re.sub(r"[_＋+\-—/\\.]", " ", s)
+    s = re.sub(r"\s{2,}", " ", s).strip().lower()
+    return [t for t in s.split() if t and not t.isdigit() and len(t) >= 2]
+
+
+def name_similarity(a: str, b: str) -> float:
+    """字符串与商品名的匹配分 0~1（真值覆盖率 70% + Jaccard 30%）。
+
+    用于实验结果打分排序：文件名/包内名 与 搜索结果 name 的相似度。
+    双清洗后比较，降低装饰符（【無料】等）干扰。"""
+    ta, tb = set(_title_tokens(a)), set(_title_tokens(b))
+    if not ta or not tb:
+        return 0.0
+    inter = ta & tb
+    return round(0.7 * len(inter) / len(tb) + 0.3 * len(inter) / len(ta | tb), 3)
 
 
 def sanitize_query(filename: str) -> list[str]:

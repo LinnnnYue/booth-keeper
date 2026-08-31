@@ -165,14 +165,51 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
       - "ok": 归档成功
       - "exists": 目标目录已存在，未强制覆盖
       - "mismatch": 同 ID 在其他类目下找到（错位），dest 是官方类目
+      - "delisted": 确为已下架（连通性探针通过 + 404），归入 root/已下架商品
       - "err": 失败
 
     R7+1 强化：扫整个 BOOTH 库找同 ID（id_xxx 命名的目录），若在不同类目下 → 报 mismatch，
     避免主上疑惑「我手动移到了 3D模型 为啥不直接落 3D发型」。
+    R17：fetch 失败不妄断 —— 用 classify_item_state 严谨判定（网络可达 + 404 才算下架）。
     """
+
+    def _move_into(src_path, dst_dir):
+        """把源文件/目录内容搬进 dst_dir，并兜底清理空目录。"""
+        src = Path(src_path)
+        if src.is_dir():
+            for child in list(src.iterdir()):
+                if child.name in ("desktop.ini", "Thumbs.db", ".DS_Store"):
+                    continue
+                shutil.move(str(child), str(dst_dir / child.name))
+            try:
+                for leftover in list(src.iterdir()):
+                    leftover.unlink()
+            except Exception:
+                pass
+            if not any(src.iterdir()):
+                _remove_to_trash(src)
+            cleanup_empty_parents(src, Path(root))
+        else:
+            shutil.move(str(src), str(dst_dir / src.name))
+
     it = bc.fetch_item(iid, session)
     if not it:
-        return {"status": "err", "msg": "未找到商品", "id": iid}
+        # fetch 失败 → 严谨判定：连通性探针 + 商品页 HTTP
+        state, why = bc.classify_item_state(iid, session)
+        if state == "delisted":
+            dst = Path(root) / "已下架商品" / f"{iid}_{bc.sanitize(iid)}"
+            try:
+                dst.mkdir(parents=True, exist_ok=True)
+                if move_source and Path(move_source).exists():
+                    _move_into(move_source, dst)
+                return {"status": "delisted", "msg": "已下架，归入「已下架商品」",
+                        "id": iid, "name": iid, "cat": "已下架商品", "dest": str(dst),
+                        "cover_ok": False, "icon_ok": False}
+            except Exception as e:
+                return {"status": "err", "msg": f"已下架但迁移失败:{e}", "id": iid}
+        if state == "unknown":
+            return {"status": "err", "msg": f"无法连接 BOOTH 判定状态（{why}），未归档", "id": iid}
+        return {"status": "err", "msg": f"未找到商品（{why}）", "id": iid}
     name = it.get("name") or iid
     cat = bc.classify(it.get("category_name"), it.get("category_parent_name")) or "未分类"
     dest = Path(root) / cat / f"{iid}_{bc.sanitize(name)}"

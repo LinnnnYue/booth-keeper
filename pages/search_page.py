@@ -10,15 +10,6 @@ from pages.base import BasePage
 from pages.notify import ThemeDialog
 import booth_core as bc
 from archive_util import archive_item, find_existing_source_in_library
-import os, time as _time
-
-_LOG_PATH = os.path.join(os.path.expanduser("~"), ".boothkeeper_archive_debug.log")
-def _alog(msg):
-    try:
-        with open(_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(f"[{_time.strftime('%H:%M:%S')}] {msg}\n")
-    except Exception:
-        pass
 
 
 class DroppableTextEdit(QPlainTextEdit):
@@ -146,23 +137,17 @@ class ArchiveWorker(QThread):
         self.moves = {}  # R7：id → BOOTH 库内源路径（由 SearchPage.archive 注入）
 
     def run(self):
-        _alog(f"ArchiveWorker.run() START ids={self.ids} root={self.root!r} moves={self.moves}")
         s = bc.make_session(self.cookie)
         if self.proxy:
             s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
         for iid in self.ids:
             src = self.moves.get(iid)
-            _alog(f"  archive_item({iid}, root={self.root!r}, move_source={src!r})")
             try:
                 r = archive_item(iid, self.root, s, move_source=src)
             except Exception as e:
-                _alog(f"  archive_item EXCEPTION: {type(e).__name__}: {e}")
-                import traceback; _alog(f"  {traceback.format_exc()}")
                 r = {"status": "err", "msg": str(e)}
             r["id"] = iid
-            _alog(f"  result: status={r.get('status')} dest={r.get('dest','')!r} msg={r.get('msg','')!r}")
             self.item_done.emit(r)
-        _alog("ArchiveWorker.run() FINISHED")
         self.finished.emit()
 
 
@@ -172,7 +157,10 @@ class SearchPage(BasePage):
     R6 增强：
       - 输入检测（file://、盘符路径、含扩展名）→ 提取 basename → sanitize_query 生成多候选
       - 多候选顺序搜索，合并去重，UI 显示「已尝试 X 个候选」
-      - Agent/token 接入框架（设置页 cookie 已存；Worker 读 cfg 钩子 _agent_hook 预留）
+    R17 增强（多信号 + 打分）：
+      - 拖入文件/压缩包 → probe_package 深挖包内信号（外层名/包内名/作者名）
+      - search_booth 结果按相似度打分排序，显示匹配度与置信分级（高/中/低）
+      - 高置信可放心归档，低置信红色提示先人工核对
     """
     def __init__(self, main):
         super().__init__(main)
@@ -181,6 +169,7 @@ class SearchPage(BasePage):
         self.worker = None
         self.archiver = None
         self.items = []
+        self._sig = None        # R17：当前输入的信号元（打分用）
         self._done = []
 
         self.edit = DroppableTextEdit()
@@ -227,21 +216,29 @@ class SearchPage(BasePage):
         self.spacer()
 
     def _build_queries(self, raw: str) -> list[str]:
-        """输入 → 候选查询列表（顺序敏感）。"""
+        """输入 → 候选查询列表（顺序敏感）。
+
+        R17：若输入是存在的文件/目录 → probe_package 深挖包内信号，
+        用 build_search_queries 生成多候选（外层名→包内名→作者+商品→兜底），
+        并把信号元存 self._sig 供结果打分。"""
         raw = raw.strip()
         if not raw:
             return []
-        # 1. 若是路径/file URL → 提 basename
+        self._sig = None
         if _looks_like_path(raw):
+            p = Path(_extract_file_path(raw))
+            if p.exists():
+                self._sig = bc.probe_package(p)
+                queries = bc.build_search_queries(p)
+                if queries:
+                    return queries
             base = _extract_basename(raw)
         else:
             base = raw
-        # 2. 走 booth_core.sanitize_query 生成多候选
+        # 兜底：booth_core.sanitize_query 老路
         candidates = bc.sanitize_query(base)
-        # 3. 兜底：原始输入也作为候选（万一 basename 提错了）
         if raw != base and raw not in candidates:
             candidates.append(raw)
-        # 4. 去空去重（保留顺序）
         seen, out = set(), []
         for c in candidates:
             c = c.strip()
@@ -267,15 +264,25 @@ class SearchPage(BasePage):
         self.worker.start()
 
     def on_result(self, items, used):
+        # R17 打分排序：名称相似度 + 作者/店名命中加权，高分置顶
+        if getattr(self, "_sig", None):
+            items = bc.rank_search_results(items, self._sig)
         self.items = items
         self.list.clear()
         for it in items[:20]:
+            score = it.get("score", 0)
+            if score >= 0.6:
+                tag = "高置信"
+            elif score >= 0.35:
+                tag = "中置信"
+            else:
+                tag = "低置信"
             item = QListWidgetItem(
-                f"{it['id']} · {it.get('name','')}   |   {it.get('price_text','')}   |   {it.get('shop','')}")
+                f"[{100*score:3.0f}% {tag}] {it['id']} · {it.get('name','')}   |   {it.get('price_text','')}   |   {it.get('shop','')}")
             item.setData(Qt.UserRole, it["id"])
             self.list.addItem(item)
         self.lbl.setText(
-            f"用 {used} 个候选搜到 {len(items)} 条（合并去重，显示前 20）。建议人工核对后归档。")
+            f"用 {used} 个候选搜到 {len(items)} 条（按匹配度排序，置信分级：高=可直接归档，中=建议核对，低=可能不符）。双击可开浏览器核对。")
         self.btn_archive.setEnabled(len(items) > 0)
 
     def open_in_browser(self, item):
@@ -286,11 +293,8 @@ class SearchPage(BasePage):
             webbrowser.open(f"https://booth.pm/ja/items/{iid}")
 
     def archive(self):
-        _alog("=== archive() called ===")
         sel = self.list.selectedItems()
-        _alog(f"selectedItems count={len(sel)} ids={[it.data(Qt.UserRole) for it in sel]}")
         if not sel:
-            _alog("NO SELECTION → dialog + return")
             ThemeDialog.information(self, "提示", "请先选择要归档的商品（单击选中）。")
             return
         ids = [it.data(Qt.UserRole) for it in sel]
@@ -302,38 +306,30 @@ class SearchPage(BasePage):
             it = next((x for x in self.items if str(x.get("id")) == str(iid)), None)
             name = (it or {}).get("name", "")
             src = find_existing_source_in_library(str(iid), name, cfg["booth_root"])
-            _alog(f"find_source({iid}, {name!r}, {cfg['booth_root']!r}) → {src!r}")
             if src:
                 moves[iid] = src
             else:
                 skipped.append(iid)
-        _alog(f"after find: moves={moves} skipped={skipped}")
 
         # R15 兜底
         if skipped and not moves:
             raw_input = self.edit.toPlainText()
-            _alog(f"fallback: raw_input={raw_input!r}")
             found = None
             for line in raw_input.splitlines():
                 line = line.strip()
                 if not line or not _looks_like_path(line):
-                    _alog(f"  skip line: {line!r} looks={_looks_like_path(line) if line else 'N/A'}")
                     continue
                 p = Path(_extract_file_path(line))
                 exists = p.exists()
-                _alog(f"  line={line!r} → path={str(p)!r} exists={exists}")
                 if exists:
                     found = str(p)
                     break
-            _alog(f"fallback found={found!r}")
             if found:
                 for iid in skipped:
                     moves[iid] = found
                 skipped = []
-        _alog(f"pre-join: moves={moves} skipped={skipped}")
 
         if skipped and not moves:
-            _alog("NO MOVES → '未找到源文件' dialog + return")
             ThemeDialog.information(self, "未找到源文件",
                 f"在 BOOTH 根（{cfg['booth_root']}）下未找到任何待归档商品对应的源文件/目录。\n\n"
                 f"未命中 ID：{', '.join(map(str, skipped))}\n\n"
@@ -341,9 +337,7 @@ class SearchPage(BasePage):
             return
 
         archive_ids = [iid for iid in ids if iid in moves]
-        _alog(f"archive_ids={archive_ids}")
         if not archive_ids:
-            _alog("archive_ids empty → silent return")
             return
 
         self._done = []
@@ -352,12 +346,9 @@ class SearchPage(BasePage):
         self.archiver.moves = moves
         self.archiver.item_done.connect(self.on_archive_done)
         self.archiver.finished.connect(self.on_finished)
-        _alog(f"starting ArchiveWorker with ids={archive_ids} moves={moves}")
         self.archiver.start()
-        _alog("ArchiveWorker.start() called")
 
     def on_archive_done(self, r):
-        _alog(f"on_archive_done: status={r.get('status')} id={r.get('id')} name={r.get('name','')!r} dest={r.get('dest','')!r} msg={r.get('msg','')!r}")
         self._done.append(r)
         if r["status"] == "ok":
             src_note = "（含源文件搬移）" if r.get("dest") and "moved" in r else ""
@@ -365,7 +356,26 @@ class SearchPage(BasePage):
         elif r["status"] == "exists":
             self.lbl.setText(f"已存在跳过：{r.get('name','')}")
         else:
-            self.lbl.setText(f"失败 {r.get('id','')}：{r.get('msg','')}")
+            # R17：归档失败 → 若为「未找到商品」，严谨判定是否真下架
+            # （BOOTH 可达 + 商品 404 = 确已下架；网络异常 = 不妄断）
+            msg = r.get("msg", "")
+            if "未找到商品" in msg:
+                cfg = self.main.config
+                sess = bc.make_session(cfg.get("cookie", ""))
+                if cfg.get("proxy"):
+                    sess.proxies.update({"http": cfg["proxy_url"],
+                                         "https": cfg["proxy_url"]})
+                state, why = bc.classify_item_state(str(r.get("id", "")), sess)
+                if state == "delisted":
+                    self.lbl.setText(
+                        f"⚠ {r.get('id')} 确为已下架（BOOTH 可达，商品 404）。"
+                        f"可将源文件移入 BOOTH/已下架商品/")
+                elif state == "unknown":
+                    self.lbl.setText(f"⛔ {r.get('id')} 无法判定是否下架：{why}")
+                else:
+                    self.lbl.setText(f"失败 {r.get('id','')}：{msg}")
+            else:
+                self.lbl.setText(f"失败 {r.get('id','')}：{msg}")
         # R7 修复：分母用本次归档的选中数（self.ids），不是搜索结果总数
         total = len(self._done) or 1
         # self.archiver.ids 是注入的归档列表
@@ -373,7 +383,6 @@ class SearchPage(BasePage):
         self.bar.setValue(int(total / denom * 100))
 
     def on_finished(self):
-        _alog(f"on_finished: done_count={len(self._done)} results={[{k:v for k,v in r.items() if k!='images'} for r in self._done]}")
         ok = sum(1 for r in self._done if r["status"] == "ok")
         self.main.set_status(f"检索归档完成：{ok} 成功 / {len(self._done)} 总计")
 
