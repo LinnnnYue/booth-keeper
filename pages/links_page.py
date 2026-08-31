@@ -1,5 +1,8 @@
 # pages/links_page.py — 批量链接处理
 import re
+import json
+import time
+import datetime
 from pathlib import Path
 from PySide6.QtWidgets import (QPlainTextEdit, QPushButton, QListWidget, QListWidgetItem,
     QHBoxLayout, QLabel, QProgressBar, QFrame)
@@ -74,7 +77,8 @@ class LinksWorker(QThread):
                             self.log.emit(
                                 f"{iid} 补全下载 {fname} ({dl.get('size_text','')})...")
                             self._download_with_referer(dl["url"], str(target), s,
-                                                         referer_id=iid)
+                                                         referer_id=iid,
+                                                         expect_bytes=dl.get("size_bytes"))
                             if target.exists() and target.stat().st_size > 0 \
                                     and not bc.is_corrupt_package(target):
                                 downloaded_files.append(fname)
@@ -120,6 +124,36 @@ class LinksWorker(QThread):
                         f"{iid} 补全失败：{len(missing_files)} 个文件未下载")
                 else:
                     status = "warn" if dup else "ok"
+                # R19（慎之勇者预案）：写商品快照 _manifest.json —— 记录抓取时
+                # 的价格/免费状态/时间/文件清单。限时免费商品变付费或下架后，
+                # 本地仍有「当年免费获取」的溯源，便于补三件套时判断与归档审计。
+                try:
+                    files_meta = []
+                    for fn in downloaded_files:
+                        fp = dest / fn
+                        files_meta.append({
+                            "name": fn,
+                            "size": fp.stat().st_size if fp.exists() else 0,
+                            "ok": not bc.is_corrupt_package(fp) if fp.exists() else False,
+                        })
+                    manifest = {
+                        "id": iid,
+                        "name": name,
+                        "category": cat,
+                        "price": it.get("price", -1),
+                        "price_text": it.get("price_text", ""),
+                        "free": int(it.get("price", 0) or 0) <= 0,
+                        "archived_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "downloaded": files_meta,
+                        "missing": missing_files,
+                        "cover_ok": cover_ok,
+                        "icon_ok": icon_ok,
+                    }
+                    (dest / "_manifest.json").write_text(
+                        json.dumps(manifest, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+                except Exception:
+                    pass
                 self.item_done.emit({
                     "id": iid, "name": name, "cat": cat,
                     "status": status, "dup": dup,
@@ -132,22 +166,45 @@ class LinksWorker(QThread):
                 self.item_done.emit({"id": iid, "status": "err", "msg": str(e)[:80]})
         self.finished.emit()
 
-    def _download_with_referer(self, url: str, dest_path: str, s, referer_id: str):
-        """下载 BOOTH 文件，需 Referer header 防盗链。"""
+    def _download_with_referer(self, url: str, dest_path: str, s, referer_id: str,
+                               expect_bytes: int | None = None):
+        """下载 BOOTH 文件（需 Referer header 防盗链）+ 完整性硬门禁。
+
+        R19（慎之勇者预案）：限时免费商品错过时限即变付费，不可逆。
+        → 当场重试最多 3 次：截断/损坏（is_corrupt）或与期望大小偏差 >5%
+          都视为失败重下，当场修好，不让残件过夜留给用户事后补。"""
         referer = f"https://booth.pm/ja/items/{referer_id}"
-        r = bc.retry_request(
-            "GET", url, s,
-            headers={**bc.UA, "Referer": referer},
-            timeout=120, stream=True)
-        if not r:
-            raise RuntimeError("网络请求失败")
-        if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code}")
-        Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(dest_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=64 * 1024):
-                if chunk:
-                    f.write(chunk)
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        last = None
+        for attempt in range(1, 4):
+            try:
+                r = bc.retry_request(
+                    "GET", url, s,
+                    headers={**bc.UA, "Referer": referer},
+                    timeout=120, stream=True, retries=1)
+                if not r:
+                    raise RuntimeError("网络请求失败")
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}")
+                with open(dest_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=64 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                # 完整性门禁：zip/upkg 截断、大小与期望偏差 >5% 都判失败 → 重下
+                if bc.is_corrupt_package(dest_path):
+                    raise RuntimeError("完整性校验失败（截断/损坏）")
+                if expect_bytes and expect_bytes > 0:
+                    ratio = dest.stat().st_size / expect_bytes
+                    if ratio < 0.95 or ratio > 1.03:
+                        raise RuntimeError(
+                            f"大小不符 {dest.stat().st_size:,}B vs 期望 {expect_bytes:,}B")
+                return
+            except Exception as e:
+                last = e
+                if attempt < 3:
+                    time.sleep(1.5 * attempt)
+        raise last
 
 
 class LinksPage(BasePage):
@@ -281,4 +338,19 @@ class LinksPage(BasePage):
     def on_finished(self):
         self.btn_run.setEnabled(True)
         self.btn_parse.setEnabled(True)
-        self.main.set_status(f"归档完成：{self.queue.count()} 项")
+        # R19（慎之勇者预案）：完成后立即汇总「需处理项」——
+        # 限时免费商品若今天不修，过时限变付费就不可逆，必须当场提示。
+        need = []
+        for i in range(self.queue.count()):
+            it = self.queue.item(i)
+            tag = it.data(Qt.UserRole)
+            if tag == "err" or "⚠" in it.text() or "✕" in it.text() or "失败" in it.text():
+                need.append(it.text()[:80])
+        if need:
+            self.main.set_status(
+                f"归档完成：{self.queue.count()} 项，⚠ {len(need)} 项需处理"
+                f"（限时免费请尽快重试，错过变付费）")
+            ThemeDialog.warning(self, "需处理项（限时免费请尽快修复）",
+                "\n".join(need[:8]) + ("\n…" if len(need) > 8 else ""))
+        else:
+            self.main.set_status(f"归档完成：{self.queue.count()} 项，全部完整")

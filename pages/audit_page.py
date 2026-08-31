@@ -71,10 +71,19 @@ def scan_library(root, on_progress=None):
             missing.append("ini")
         # R10: 检测本体缺失（纯本地 stat，快）
         body_missing = not has_body(d)
+        # R19（慎之勇者预案）：检测本体损坏（zip/unitypackage 截断）。
+        # 限时免费商品一旦变付费，损坏文件就无从重新下载——必须尽早暴露。
+        corrupt = []
+        if not body_missing:
+            for f in d.iterdir():
+                if f.is_file() and f.suffix.lower() in (".zip", ".unitypackage") \
+                        and bc.is_corrupt_package(f):
+                    corrupt.append(f.name)
         out.append({
             "id": iid, "name": name, "path": str(d),
             "missing": missing, "local_tag": bc.extract_version_tag(d.name),
             "body_missing": body_missing,  # True = 缺本体文件
+            "corrupt": corrupt,            # R19: 损坏文件清单
         })
     return out
 
@@ -271,7 +280,8 @@ class BackfillWorker(QThread):
 
     def __init__(self, items, root, proxy, proxy_url, cookie):
         super().__init__()
-        self.items = [i for i in items if i.get("body_missing")]
+        self.items = [i for i in items
+                      if i.get("body_missing") or i.get("corrupt")]  # R19: 损坏也补全
         self.root = root
         self.proxy = proxy
         self.proxy_url = proxy_url
@@ -292,9 +302,12 @@ class BackfillWorker(QThread):
                     self.prog.emit(
                         f"  · {it['id']} · {it['name']} 商品页未找到下载链接")
                     continue
-                # 已存在的文件（无论何种）不重复下
-                existing = {f.name for f in dest.iterdir() if f.is_file()
-                             and f.stat().st_size > 0}
+                # R19（慎之勇者预案）：损坏文件不算「已存在」→ 会重新下载；
+                # 下载后校验完整性，当场重试 2 次（限时免费错过即变付费）
+                def _ok_file(f):
+                    return f.is_file() and f.stat().st_size > 0 \
+                        and not bc.is_corrupt_package(f)
+                existing = {f.name for f in dest.iterdir() if _ok_file(f)}
                 ok = False
                 for dl in downloads:
                     fname = dl.get("name") or f"{it['id']}_file.zip"
@@ -302,27 +315,36 @@ class BackfillWorker(QThread):
                         self.prog.emit(f"  · {it['id']} {fname} 已存在，跳过")
                         continue
                     target = dest / fname
-                    try:
-                        referer = f"https://booth.pm/ja/items/{it['id']}"
-                        r = bc.retry_request(
-                            "GET", dl["url"], s,
-                            headers={**bc.UA, "Referer": referer},
-                            timeout=120, stream=True)
-                        if not r or r.status_code != 200:
-                            self.prog.emit(
-                                f"  · {it['id']} {fname} HTTP {r.status_code if r else 'None'}")
-                            continue
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        with open(target, "wb") as f:
-                            for chunk in r.iter_content(chunk_size=64 * 1024):
-                                if chunk:
-                                    f.write(chunk)
-                        if target.exists() and target.stat().st_size > 0:
+                    referer = f"https://booth.pm/ja/items/{it['id']}"
+                    last = None
+                    for attempt in range(1, 3):
+                        try:
+                            r = bc.retry_request(
+                                "GET", dl["url"], s,
+                                headers={**bc.UA, "Referer": referer},
+                                timeout=120, stream=True, retries=1)
+                            if not r or r.status_code != 200:
+                                raise RuntimeError(
+                                    f"HTTP {r.status_code if r else 'None'}")
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            with open(target, "wb") as f:
+                                for chunk in r.iter_content(chunk_size=64 * 1024):
+                                    if chunk:
+                                        f.write(chunk)
+                            if not (_ok_file(target)):
+                                raise RuntimeError("完整性校验失败")
                             ok = True
                             self.prog.emit(
-                                f"  ✓ {it['id']} {fname} ({target.stat().st_size / 1024 / 1024:.2f} MB)")
-                    except Exception as e:
-                        self.prog.emit(f"  · {it['id']} {fname} 异常: {e}")
+                                f"  ✓ {it['id']} {fname}"
+                                f" ({target.stat().st_size / 1024 / 1024:.2f} MB)")
+                            break
+                        except Exception as e:
+                            last = e
+                            if attempt < 2:
+                                import time as _t
+                                _t.sleep(1.5)
+                    if not ok:
+                        self.prog.emit(f"  · {it['id']} {fname} 下载失败: {last}")
                 if ok:
                     fixed += 1
             except Exception as e:
@@ -659,22 +681,31 @@ class AuditPage(BasePage):
     def on_backfill_scan_done(self, items):
         self._all_scan_items = items
         body_missing = [it for it in items if it.get("body_missing")]
+        corrupt = [it for it in items if it.get("corrupt")]
         self.list_backfill.clear()
         for it in body_missing:
             self.list_backfill.addItem(f"{it['id']} · {it['name']}   ⚠缺本体")
-        self.backfill_bar.setFormat(f"完成（发现 {len(body_missing)} 件缺本体）")
+        # R19：损坏文件也列举（限时免费一旦变付费就无法重下，须今日处理）
+        for it in corrupt:
+            for fn in it["corrupt"]:
+                self.list_backfill.addItem(
+                    f"{it['id']} · {it['name']}   ✕损坏 {fn[:40]}")
+        n_need = len(body_missing) + (sum(len(it["corrupt"]) for it in corrupt))
+        self.backfill_bar.setFormat(
+            f"完成（缺本体 {len(body_missing)} 件，损坏 {len(corrupt)} 件）")
         self.backfill_bar.setValue(100)
         self.btn_backfill_scan.setEnabled(True)
-        self.btn_backfill.setEnabled(len(body_missing) > 0)
-        if body_missing:
-            self.lbl_backfill.setText(f"发现 {len(body_missing)} 件缺本体")
+        self.btn_backfill.setEnabled(n_need > 0)
+        if n_need:
+            self.lbl_backfill.setText(f"发现 {len(body_missing)} 件缺本体、{len(corrupt)} 件损坏")
         else:
-            self.lbl_backfill.setText("无本体缺失 ✓")
-        self.main.set_status(f"本体检测完成：{len(body_missing)} 件缺本体")
+            self.lbl_backfill.setText("无本体缺失/损坏 ✓")
+        self.main.set_status(f"本体检测完成：缺 {len(body_missing)} 件，损坏 {len(corrupt)} 件")
 
     def start_backfill(self):
         items = getattr(self, "_all_scan_items", [])
-        body_items = [it for it in items if it.get("body_missing")]
+        body_items = [it for it in items
+                      if it.get("body_missing") or it.get("corrupt")]  # R19: 含损坏
         if not body_items:
             return
         cfg = self.main.config
