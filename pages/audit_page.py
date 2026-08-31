@@ -302,6 +302,11 @@ class BackfillWorker(QThread):
                     self.prog.emit(
                         f"  · {it['id']} · {it['name']} 商品页未找到下载链接")
                     continue
+                # R20 版本隔离：下载列表为新版时，旧版移入 v{N}/ 子目录
+                moved_old = bc.isolate_old_versions(
+                    dest, [dl.get("name") or "" for dl in downloads])
+                for mname in moved_old:
+                    self.prog.emit(f"  · {it['id']} 旧版 {mname} 已移入子目录保留")
                 # R19（慎之勇者预案）：损坏文件不算「已存在」→ 会重新下载；
                 # 下载后校验完整性，当场重试 2 次（限时免费错过即变付费）
                 def _ok_file(f):

@@ -489,6 +489,62 @@ def scan_corrupt_in_library(root: str | Path) -> list[dict]:
     return out
 
 
+def _version_of(name: str) -> str:
+    """从文件名提取版本号（'V1' / 'v1.0.1' / 'Ver 2.00' / '1.01'），无则空串。"""
+    s = Path(name).stem
+    m = re.search(r"(?:v(?:er(?:sion)?)?\s*[._\-\s]*)(\d+(?:\.\d+)*)", s, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"(\d+)\.(\d+)(?:\.\d+)*", s)
+    if m:
+        return m.group(0)
+    return ""
+
+
+def _versionless(name: str) -> str:
+    """去掉版本号后的基名（小写、去分隔符），用于识别『同一商品不同版本』。"""
+    s = re.sub(r"(?:v(?:er(?:sion)?)?\s*[._\-\s]*\d+(?:\.\d+)*)", "", name, flags=re.I)
+    s = re.sub(r"\d+\.\d+(?:\.\d+)*", "", s)
+    return re.sub(r"[\s_.\-]+", "", Path(s).stem).lower()
+
+
+def _ver_tuple(s: str) -> tuple:
+    return tuple(int(x) for x in re.split(r"[._\-]", s) if x.isdigit())
+
+
+def isolate_old_versions(dest: str | Path, new_download_names: list[str]) -> list[str]:
+    """R20 版本隔离（慎之勇者预案）：下载列表含新版本时，
+    把目录根的旧版本包移入 `v{旧版本号}/` 子目录，新版保持在外层。
+
+    例：根目录已有 MoonlightPostKipV1.zip，downloads 含 MoonlightPostKipV2.zip
+      → MoonlightPostKipV1.zip 移入 v1/。旧的损坏/完好都移，保留历史版本。
+    返回已移动的文件名列表。"""
+    dest = Path(dest)
+    moved = []
+    root_files = [f for f in dest.iterdir()
+                  if f.is_file() and f.suffix.lower() in (".zip", ".unitypackage")
+                  and not f.name.startswith("_")]
+    for nf in new_download_names:
+        if not nf:
+            continue
+        nkey = _versionless(nf)
+        nver = _version_of(nf)
+        if not nkey or not nver:
+            continue
+        for f in root_files:
+            fkey = _versionless(f.name)
+            fver = _version_of(f.name)
+            if fkey == nkey and fver and fver != nver and _ver_tuple(fver) < _ver_tuple(nver):
+                sub = dest / f"v{fver}"
+                try:
+                    sub.mkdir(parents=True, exist_ok=True)
+                    f.rename(sub / f.name)
+                    moved.append(f.name)
+                except Exception:
+                    pass
+    return moved
+
+
 def rank_search_results(items: list[dict], sig: dict | None) -> list[dict]:
     """对搜索结果按输入信号打分排序（名称相似度 + 作者/店名命中加权）。
 

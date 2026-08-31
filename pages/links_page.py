@@ -55,6 +55,13 @@ class LinksWorker(QThread):
                 dest.mkdir(parents=True, exist_ok=True)
                 # R9: 先下载商品本体（之前缺失的核心步骤）
                 downloads = bc.fetch_item_downloads(iid, s)
+                # R20 版本隔离：下载列表含新版本 → 根目录旧版本自动移入 v{N}/ 子目录
+                if downloads:
+                    moved_old = bc.isolate_old_versions(
+                        dest, [dl.get("name") or "" for dl in downloads])
+                    for mname in moved_old:
+                        self.log.emit(
+                            f"{iid} 下载列表为新版，旧版 {mname} 已移入子目录保留")
                 downloaded_files = []
                 missing_files = []
                 if downloads:
