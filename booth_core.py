@@ -14,6 +14,7 @@ import re
 import sys
 import io
 import time
+import gzip
 import ctypes
 import tempfile
 import zipfile
@@ -438,6 +439,54 @@ def build_search_queries(path: str | Path) -> list[str]:
     for q in sanitize_query(outer) if outer else []:
         add(q)
     return cands[:8]
+
+
+def is_corrupt_package(path: str | Path) -> bool:
+    """校验本地压缩包完整性。
+
+    - zip：is_zipfile + 读中央目录（截断/坏 zip → BadZipFile → 判损坏）
+    - unitypackage：gzip + tarfile 能列条目
+    - rar / 7z：无内置解析库 → 不误报，返回 False
+
+    背景：『已存在且 size>0 就跳过』会把断下载残留的半截文件当已完成，
+    用户换节点/换代理重跑会跳过损坏文件（R18 bug）。下载前必须二次校验。"""
+    p = Path(path)
+    ext = p.suffix.lower()
+    try:
+        if ext == ".zip":
+            if not zipfile.is_zipfile(p):
+                return True
+            with zipfile.ZipFile(p) as z:
+                _ = z.namelist()      # 触发中央目录读取；损坏 → BadZipFile
+            return False
+        if ext == ".unitypackage":
+            with gzip.open(p, "rb") as g:
+                with tarfile.open(fileobj=g, mode="r:") as tf:
+                    tf.next()      # TarFile 非迭代器，须用 .next()；损坏 → ReadError
+            return False
+    except Exception:
+        return True
+    return False  # rar/7z 无法校验
+
+
+def scan_corrupt_in_library(root: str | Path) -> list[dict]:
+    """扫描 BOOTH 库全目录，返回损坏包清单 [{path, iid, size}]（R18 修复用）。"""
+    root = Path(root)
+    out = []
+    for d in root.rglob("*"):
+        if not d.is_dir():
+            continue
+        m = re.match(r"^(\d{5,8})_", d.name)
+        if not m:
+            continue
+        for f in d.iterdir():
+            if not f.is_file():
+                continue
+            if f.suffix.lower() not in (".zip", ".unitypackage"):
+                continue
+            if is_corrupt_package(f):
+                out.append({"path": str(f), "iid": m.group(1), "size": f.stat().st_size})
+    return out
 
 
 def rank_search_results(items: list[dict], sig: dict | None) -> list[dict]:

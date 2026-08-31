@@ -58,22 +58,29 @@ class LinksWorker(QThread):
                     for dl in downloads:
                         fname = dl.get("name") or f"{iid}_{bc.sanitize(name)}.zip"
                         target = dest / fname
-                        if target.exists() and target.stat().st_size > 0:
-                            # 文件已存在 + 大小 > 0 → 跳过（不算下载）
+                        # R18：存在且非零大小 ≠ 完好——断下载残件会被『已存在』吞掉。
+                        # 校验包完整性：损坏/半截 → 走重新下载。
+                        if target.exists() and target.stat().st_size > 0 \
+                                and not bc.is_corrupt_package(target):
+                            # 文件已存在 + 大小 > 0 + 完整 → 跳过（不算下载）
                             downloaded_files.append(fname)
                             continue
-                        # 文件缺失 → 下载补全
+                        if target.exists():
+                            self.log.emit(
+                                f"{iid} {fname} 已存在但损坏（{target.stat().st_size} B），重新下载…")
+                        # 文件缺失或损坏 → 下载补全
                         missing_files.append(fname)
                         try:
                             self.log.emit(
                                 f"{iid} 补全下载 {fname} ({dl.get('size_text','')})...")
                             self._download_with_referer(dl["url"], str(target), s,
                                                          referer_id=iid)
-                            if target.exists() and target.stat().st_size > 0:
+                            if target.exists() and target.stat().st_size > 0 \
+                                    and not bc.is_corrupt_package(target):
                                 downloaded_files.append(fname)
                                 self.log.emit(f"{iid} ✓ {fname}")
                             else:
-                                self.log.emit(f"{iid} ✕ {fname} 下载失败")
+                                self.log.emit(f"{iid} ✕ {fname} 下载失败或仍损坏")
                         except Exception as e:
                             self.log.emit(f"{iid} {fname} 下载异常: {e}")
                 else:
