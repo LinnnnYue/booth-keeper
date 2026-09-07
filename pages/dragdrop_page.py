@@ -1,10 +1,12 @@
 # pages/dragdrop_page.py — 拖拽文件识别分类
 import re
+import json
+import datetime
 from pathlib import Path
-from PySide6.QtWidgets import (QFrame, QListWidget, QLabel, QPushButton, QHBoxLayout,
-    QProgressBar, QVBoxLayout, QGraphicsOpacityEffect)
+from PySide6.QtWidgets import (QFrame, QListWidget, QListWidgetItem, QLabel, QPushButton,
+    QHBoxLayout, QProgressBar, QVBoxLayout, QGraphicsOpacityEffect)
 from PySide6.QtCore import Qt, QThread, Signal, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QColor
 from pages.base import BasePage
 from pages.notify import ThemeDialog
 import theme
@@ -132,7 +134,9 @@ class DragDropPage(BasePage):
         super().__init__(main)
         self.header("拖拽分类", "拖入文件或文件夹，自动提取七位 ID 反查归档；缺 ID 则提示补名后重拖")
         self.worker = None
-        self.pending = []
+        self.pending = []          # 待归档 [(path, iid)] —— 归档成功后移除，杜绝二次归档
+        self._batch = []           # 本次归档快照（进度用）
+        self._done_file = Path.home() / ".boothkeeper_done.json"
 
         self.drop = DropFrame()
         self.drop.files_dropped.connect(self.on_drop)
@@ -145,12 +149,29 @@ class DragDropPage(BasePage):
         self.no_list.setMaximumHeight(84)
         self.root.addWidget(self.no_list)
 
+        # R21（慎之勇者预案）：待归档与已归档左右分栏，视觉+逻辑彻底分开。
+        # 待归档：成功/跳过项一旦处理即移出 → 不再存在「目录已存在→替换」二次归档。
+        # 已归档：跨会话历史，最新在上。
         self.lbl_q = QLabel("待归档队列：")
         self.lbl_q.setObjectName("pageSub")
-        self.root.addWidget(self.lbl_q)
+        self.lbl_done = QLabel("已归档（历史，最新在上）：")
+        self.lbl_done.setObjectName("pageSub")
+        cols = QHBoxLayout()
+        left_w = QVBoxLayout()
+        left_w.addWidget(self.lbl_q)
         self.queue = QListWidget()
         self.queue.setMinimumHeight(150)
-        self.root.addWidget(self.queue)
+        self.queue.setSelectionMode(QListWidget.ExtendedSelection)
+        left_w.addWidget(self.queue)
+        right_w = QVBoxLayout()
+        right_w.addWidget(self.lbl_done)
+        self.done_list = QListWidget()
+        self.done_list.setObjectName("obs")
+        self.done_list.setMinimumHeight(150)
+        right_w.addWidget(self.done_list)
+        cols.addLayout(left_w, 1)
+        cols.addLayout(right_w, 1)
+        self.root.addLayout(cols)
 
         self.bar = QProgressBar()
         self.root.addWidget(self.bar)
@@ -160,14 +181,63 @@ class DragDropPage(BasePage):
         self.btn_run.setObjectName("accent")
         self.btn_run.clicked.connect(self.start)
         self.btn_run.setEnabled(False)
-        self.btn_clear = QPushButton("清空")
+        self.btn_clear = QPushButton("清空待归档")
         self.btn_clear.setObjectName("secondary")
         self.btn_clear.clicked.connect(self.clear_all)
+        self.btn_his = QPushButton("清空历史")
+        self.btn_his.setObjectName("secondary")
+        self.btn_his.clicked.connect(self.clear_history)
         row.addWidget(self.btn_run)
         row.addWidget(self.btn_clear)
+        row.addWidget(self.btn_his)
         row.addStretch(1)
         self.root.addLayout(row)
         self.spacer()
+        self._load_done()
+
+    def _load_done(self):
+        """读取跨会话已归档历史（最新在前）。"""
+        try:
+            data = json.loads(self._done_file.read_text(encoding="utf-8"))
+            for e in data.get("entries", []):
+                self.done_list.addItem(
+                    f"{e.get('t','')}  {e.get('mark','')} {e.get('iid','')}"
+                    f" · {e.get('name','')}  →  {e.get('cat','')}")
+        except Exception:
+            pass
+
+    def _push_done(self, iid, name, cat, mark):
+        """成功/跳过项入右栏并持久化（最新在上）。"""
+        e = {"t": datetime.datetime.now().strftime("%m-%d %H:%M"),
+             "iid": iid, "name": name, "cat": cat, "mark": mark}
+        self.done_list.insertItem(
+            0, f"{e['t']}  {mark} {iid} · {name}  →  {cat}")
+        try:
+            data = {"entries": []}
+            if self._done_file.exists():
+                data = json.loads(self._done_file.read_text(encoding="utf-8"))
+            data.setdefault("entries", []).insert(0, e)
+            data["entries"] = data["entries"][:500]
+            self._done_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _remove_pending(self, p: str):
+        """按 path 从待归档队列移除该项。"""
+        for i in range(self.queue.count()):
+            if self.queue.item(i).data(Qt.UserRole) == p:
+                self.queue.takeItem(i)
+                return
+
+    def _mark_pending_fail(self, p: str, msg: str):
+        """失败项留在待归档队列并标红（可改源重试）。"""
+        for i in range(self.queue.count()):
+            it = self.queue.item(i)
+            if it.data(Qt.UserRole) == p:
+                it.setText(f"{it.text()}   ✕失败: {msg}")
+                it.setForeground(QColor("#A32D2D"))
+                return
 
     def on_theme(self, tn, mode):
         self.drop.set_motif(tn, mode)
@@ -178,7 +248,9 @@ class DragDropPage(BasePage):
             m = ID_RE.search(name)
             if m:
                 self.pending.append((p, m.group(1)))
-                self.queue.addItem(f"{m.group(1)} · {name}")
+                item = QListWidgetItem(f"{m.group(1)} · {name}")
+                item.setData(Qt.UserRole, p)   # 必须：_remove_pending/_mark_fail 靠它匹配
+                self.queue.addItem(item)
             else:
                 self.no_list.addItem(name)
         self.btn_run.setEnabled(len(self.pending) > 0)
@@ -190,74 +262,92 @@ class DragDropPage(BasePage):
         self.pending = []
         self.queue.clear()
         self.no_list.clear()
-        self.btn_run.setEnabled(False)
         self.bar.setValue(0)
+        self.btn_run.setEnabled(False)
+
+    def clear_history(self):
+        """清空右栏已归档历史（含持久化）。"""
+        self.done_list.clear()
+        try:
+            if self._done_file.exists():
+                self._done_file.unlink()
+        except Exception:
+            pass
+        self.main.set_status("已清空归档历史")
 
     def start(self):
         if not self.pending:
             return
         cfg = self.main.config
-        self.queue.clear()
+        self._batch = list(self.pending)   # 快照；成功后逐项移出待归档
         self.bar.setValue(0)
         self.btn_run.setEnabled(False)
         self.worker = DragWorker(
-            self.pending, cfg["booth_root"], cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+            self._batch, cfg["booth_root"], cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
         self.worker.item_done.connect(self.on_done)
         self.worker.finished.connect(self.on_finished)
         self.worker.start()
 
     def on_done(self, r):
         iid = r.get("id")
-        name = r.get("name") or Path(r.get("path", "")).name
-        if r["status"] == "ok":
-            self.queue.addItem(f"{iid} · {name}  →  {r.get('cat', '')}")
-        elif r["status"] == "mismatch":
-            # R7+1 错位 dialog：明确「已在 X 类目 / 官方是 Y」
+        p = r.get("path", "")
+        name = r.get("name") or Path(p).name
+        status = r.get("status")
+        # R21：err 留在待归档标红；其余一律移出待归档，入右栏历史（杜绝二次归档）
+        if status == "err":
+            self._mark_pending_fail(p, r.get("msg", ""))
+            self.main.set_status(f"{iid} 归档失败：{r.get('msg','')}")
+            self.bar.setValue(int(self._progress() / max(len(self._batch), 1) * 100))
+            return
+        self._remove_pending(p)
+        if status == "ok":
+            self._push_done(iid, name, r.get("cat", ""), "✓")
+        elif status == "mismatch":
             wrong = r.get("wrong_cat", "")
             dest_cat = r.get("dest_cat", "")
             msg = (
                 f"{iid} · {name}\n"
                 f"当前所在：{wrong}\n"
                 f"官方分类：{dest_cat}\n"
-                f"（类目可能错位，是否清掉旧目录并重新归档到「{dest_cat}」？）\n\n"
-                f"（点取消则跳过该项）"
+                f"（类目可能错位，是否重归档到「{dest_cat}」？\n"
+                f"  原目录内容会留档在目标目录内「旧_日期」子目录，不删除）\n\n"
+                f"（点取消则记入右侧历史并跳过该项）"
             )
             if ThemeDialog.confirmation(self, "类目错位", msg):
                 self._force_redo(iid, r.get("wrong_path", ""))
             else:
-                self.queue.addItem(f"{iid} · {name}  错位跳过：{wrong} → 期望 {dest_cat}")
-        elif r["status"] == "exists":
-            # R7+1 强化：dialog 文案显式说出「当前分类」+「官方分类」，避免主上疑惑
-            existing_cat = r.get("cat", "")
-            cur_cat = r.get("dest_cat", existing_cat)
-            if cur_cat and cur_cat != existing_cat:
+                self._push_done(iid, name, f"{wrong}→{dest_cat}", "✕错位跳过")
+        elif status == "exists":
+            cur_cat = r.get("dest_cat") or r.get("cat", "")
+            # R21：分类一致不再弹窗（直接记历史）；不一致才确认重排
+            if cur_cat and cur_cat != r.get("cat", ""):
                 msg = (
                     f"{iid} · {name}\n"
-                    f"当前所在：{existing_cat}\n"
-                    f"官方分类：{cur_cat}\n"
-                    f"（类目可能错位，是否清掉旧目录并重新归档到「{cur_cat}」？）\n\n"
-                    f"（点取消则跳过该项）"
+                    f"已在「{r.get('cat','')}」类别下，官方分类是「{cur_cat}」\n"
+                    f"（类目可能错位，是否重归档到「{cur_cat}」？\n"
+                    f"  原目录内容会留档在「旧_日期」子目录，不删除）"
                 )
-            else:
-                msg = (
-                    f"{iid} · {name}\n"
-                    f"已在「{existing_cat}」类别下。\n"
-                    f"是否清掉旧目录并重新归档到当前分类？\n\n"
-                    f"（点取消则跳过该项）"
-                )
-            if ThemeDialog.confirmation(self, "已归档", msg):
-                self._force_redo(iid, r.get("path", ""))
-            else:
-                self.queue.addItem(f"{iid} · {name}  已存在，跳过")
-        elif r["status"] == "warn":
-            self.queue.addItem(f"{iid} · {name}  已存在，跳过")
+                if ThemeDialog.confirmation(self, "已归档", msg):
+                    self._force_redo(iid, r.get("path", ""))
+                    return
+            self._push_done(iid, name, r.get("cat", ""), "= 已存在")
+        elif status == "warn":
+            self._push_done(iid, name, r.get("cat", ""), "= 已存在")
+        elif status == "delisted":
+            self._push_done(iid, name, "已下架商品", "✕下架")
         else:
-            self.queue.addItem(f"{iid}  ✕  {r.get('msg', '')}")
-        total = len(self.pending) or 1
-        self.bar.setValue(int(self.queue.count() / total * 100))
+            self._push_done(iid, name, r.get("cat", ""), "✕")
+        self.bar.setValue(int(self._progress() / max(len(self._batch), 1) * 100))
+
+    def _progress(self):
+        """本次归档已完成数 = 快照数 − 待归档队列剩余本批项。"""
+        remain = sum(1 for i in range(self.queue.count())
+                     if self.queue.item(i).data(Qt.UserRole)
+                     in {path for path, _ in self._batch})
+        return len(self._batch) - remain
 
     def _force_redo(self, iid: str, source_path: str):
-        """强制重归档：单件重跑 archive_item(force=True)，同步 push 进度到队列。"""
+        """强制重归档：单件重跑 archive_item(force=True)，结果入右栏历史。"""
         cfg = self.main.config
         s = bc.make_session(cfg["cookie"])
         if cfg["proxy"]:
@@ -265,12 +355,19 @@ class DragDropPage(BasePage):
         r = archive_item(iid, cfg["booth_root"], s, move_source=source_path, force=True)
         name = r.get("name") or Path(source_path).name
         if r["status"] == "ok":
-            self.queue.addItem(f"{iid} · {name}  →  {r.get('cat', '')}  [重归档]")
+            old = r.get("archived_old")
+            left = f"（旧内容已留档 {Path(old).name}）" if old else ""
+            self._push_done(iid, name, r.get("cat", ""), "✓重归档" + left)
         elif r["status"] == "err":
-            self.queue.addItem(f"{iid} · {name}  ✕  重归档失败:{r.get('msg', '')}")
+            self.main.set_status(f"{iid} 重归档失败：{r.get('msg','')}")
+            self._push_done(iid, name, r.get("cat", ""),
+                            f"✕重归档失败:{r.get('msg','')[:30]}")
         else:
-            self.queue.addItem(f"{iid} · {name}  ✕  {r.get('msg', '')}")
+            self._push_done(iid, name, r.get("cat", ""), f"✕{r.get('msg','')[:30]}")
 
     def on_finished(self):
         self.btn_run.setEnabled(True)
-        self.main.set_status(f"归档完成：{self.queue.count()} 项")
+        remain = self.queue.count()
+        self.main.set_status(
+            f"归档完成：本次 {len(self._batch)} 项，"
+            f"{'全部处理完毕' if remain == 0 else f'{remain} 项失败留在待归档（标红）'}")

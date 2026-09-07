@@ -1,5 +1,6 @@
 # archive_util.py — 共享归档逻辑
 # 封装：反查商品 → 分类 →（可选移动源文件）→ 下载封面 → 生成三件套图标
+import datetime
 import shutil
 from pathlib import Path
 import booth_core as bc
@@ -232,39 +233,69 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
                     }
         except OSError:
             pass
+    old_archived = None
     if dest.exists() and force:
-        # 强制重归档：先清掉旧目录（含残留 cover/ico/ini）
-        # R12 修复：若 source=dest（同位置重归档），不能 send2trash 整个目录——
-        # 会把 zip/unitypackage 等真实文件也送回收站。改为只清残留 cover/ico/ini
-        # 和非本体文件，保留本体 zip 等真实商品文件。
-        if move_source and Path(move_source).resolve() == dest.resolve():
-            # 同位置：仅清残留三件套外的多余文件（不碰本体 zip）
-            # R12：直接 import BODY_EXTENSIONS（已在 booth_core）
-            for f in list(dest.iterdir()):
-                if not f.is_file():
-                    continue
-                # 保留：本体（zip/unitypackage 等）、已下载的 cover.jpg
-                if f.suffix.lower() in bc.BODY_EXTENSIONS \
-                        or f.name == 'cover.jpg' \
-                        or f.name == '.folder_icon.ico' \
-                        or f.name == 'desktop.ini':
-                    continue
-                # 删除：隐藏/系统/临时文件（Thumbs.db, .DS_Store, debug_out.txt 等）
-                _remove_to_trash(f)
-        else:
-            # 跨位置：旧 dest 整个目录走回收站
+        # R22（同位置日期留档）：force 重归档不再「改名备份 + 成功回收旧档」——
+        # 主上钦定方案：同位置内新建「旧版本_日期时间」子目录，dest 原有内容
+        # 整体移入（标注日期永久留档，不删、不进回收站）；新归档内容直接落 dest 根。
+        # 三件套（cover/ico/ini）随后按需重建刷新。
+        same_pos = bool(move_source and
+                        Path(move_source).resolve() == dest.resolve())
+        if not same_pos:
+            # dest 有旧内容 → 移入「旧版本_日期_时间」子目录留档（一件不丢）
             try:
-                _remove_to_trash(dest)
+                # 先枚举 dest 现有子项（避免把稍后新建的留档目录自己也搬进去）
+                children = [c for c in dest.iterdir()]
+                if children:
+                    stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                    old_dir = dest / f"旧版本_{stamp}"
+                    n = 1
+                    while old_dir.exists():
+                        old_dir = dest / f"旧版本_{stamp}_{n}"
+                        n += 1
+                    old_dir.mkdir()
+                    moved = []
+                    try:
+                        for child in children:
+                            shutil.move(str(child), str(old_dir / child.name))
+                            moved.append(child.name)
+                    except Exception:
+                        # 留档中途失败 → 回滚已移入项，dest 尽量保持原状
+                        for nm in moved:
+                            try:
+                                if not (dest / nm).exists():
+                                    shutil.move(str(old_dir / nm), str(dest / nm))
+                            except Exception:
+                                pass
+                        raise
+                    old_archived = old_dir
             except Exception as e:
-                return {"status": "err", "msg": f"清旧目录失败:{e}", "id": iid}
+                # 留档失败 → dest 尽量还原，报错不归档
+                return {"status": "err",
+                        "msg": f"旧内容留档失败:{e}（目录已尽量还原）", "id": iid}
+        # same_pos（源即目标目录）：无新内容可入根，仅刷新三件套，不做任何删除
+    else:
+        same_pos = False
     try:
         dest.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         return {"status": "err", "msg": f"建目录失败:{e}", "id": iid}
 
-    if move_source:
+    if move_source and not same_pos:
         src = Path(move_source)
-        # 源可能已被先前归档搬走（如 force re-categorize 时），无需 move
+        # R22：force 归档源必须存在，否则归档必成空目录——
+        # 若已发生旧内容留档则先还原留档，再报错（绝不「留档后失败」）。
+        if not src.exists():
+            if old_archived is not None and old_archived.exists():
+                try:
+                    for child in list(old_archived.iterdir()):
+                        if not (dest / child.name).exists():
+                            shutil.move(str(child), str(dest / child.name))
+                    old_archived.rmdir()   # 全还原则移除空壳；有重名则保留
+                except Exception:
+                    pass
+            return {"status": "err", "msg": "源文件不存在（已还原留档内容，未重归档）",
+                    "id": iid, "name": name, "cat": cat}
         if src.exists():
             try:
                 if src.is_dir():
@@ -291,7 +322,16 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
                 else:
                     shutil.move(str(src), str(dest / src.name))
             except Exception as e:
-                return {"status": "err", "msg": f"移动失败:{e}", "id": iid}
+                # R22：移动失败 → 还原已留档的旧内容，商品一件不丢
+                if old_archived is not None and old_archived.exists():
+                    try:
+                        for child in list(old_archived.iterdir()):
+                            if not (dest / child.name).exists():
+                                shutil.move(str(child), str(dest / child.name))
+                        old_archived.rmdir()
+                    except Exception:
+                        pass
+                return {"status": "err", "msg": f"移动失败:{e}（留档内容已还原）", "id": iid}
 
     cover = dest / "cover.jpg"
     imgs = it.get("images") or []
@@ -309,5 +349,8 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
             icon_ok = True
         except Exception:
             icon_ok = False
+    # R22（同位置日期留档）：归档/移动/封面全部成功 → 旧内容已留档于 dest 内
+    # 「旧版本_日期时间」子目录（永不回收、永不删除）。返回 archived_old 供 UI 提示。
     return {"status": "ok", "name": name, "cat": cat, "id": iid, "dest": str(dest),
-            "cover_ok": cover_ok, "icon_ok": icon_ok}
+            "cover_ok": cover_ok, "icon_ok": icon_ok,
+            "archived_old": str(old_archived) if old_archived is not None else None}
