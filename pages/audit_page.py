@@ -416,9 +416,17 @@ class AuditPage(BasePage):
         self.badge_ok.setProperty("badge", "ok")
         self.badge_miss = QLabel("缺失 0")
         self.badge_miss.setProperty("badge", "warn")
+        self.btn_fix_sysattr = QPushButton("一键修复黄色图标（补S+ini归一化）")
+        self.btn_fix_sysattr.setObjectName("secondary")
+        self.btn_fix_sysattr.clicked.connect(self.start_fix_sysattr)
+        self.lbl_sysattr = QLabel("")
+        self.lbl_sysattr.setObjectName("muted")
+        self.lbl_sysattr.setProperty("mono", "1")
         brow.addWidget(self.badge_ok)
         brow.addWidget(self.badge_miss)
         brow.addStretch(1)
+        brow.addWidget(self.btn_fix_sysattr)
+        brow.addWidget(self.lbl_sysattr)
         self.root.addLayout(brow)
 
         self.root.addSpacing(10)
@@ -565,6 +573,37 @@ class AuditPage(BasePage):
         self.list_scan.addItem(f"修复完成：{fixed} 件已重建三件套")
         self.btn_fix.setEnabled(False)
         self.main.set_status(f"三件套修复完成：{fixed} 件")
+
+    # ──────── ①.5 父目录 System 标志修复（R23，2026-09-08 主上实测） ────────
+    def start_fix_sysattr(self):
+        """一键扫描+补全所有「三件套齐全但父目录缺 S 位」的目录。
+        解决：黄色默认图标 + 重启电脑也不恢复。"""
+        self.btn_fix_sysattr.setEnabled(False)
+        self.lbl_sysattr.setText("扫描中…")
+        cfg = self.main.config
+        roots = [
+            str(Path(cfg["booth_root"]) / c)
+            for c in ("3D服饰", "3D发型", "3D饰品", "3D模型", "3D工具", "3D动作")
+        ]
+
+        def _on_prog(m):
+            self.lbl_sysattr.setText(m)
+
+        self.fix_sysattr_worker = FixSysAttrWorker(roots)
+        self.fix_sysattr_worker.prog.connect(_on_prog)
+        self.fix_sysattr_worker.finished.connect(self.on_fix_sysattr_done)
+        self.fix_sysattr_worker.start()
+
+    def on_fix_sysattr_done(self, result: dict):
+        n = result.get("fixed", 0); f = result.get("failed", 0)
+        m = result.get("normalized", 0)
+        ex = result.get("examples", [])
+        ex_txt = "、".join(ex[:3]) if ex else ""
+        msg = f"黄色图标修复完成：补S {n} 件 / ini归一化 {m} 件（失败 {f}）"
+        self.lbl_sysattr.setText(msg)
+        self.list_scan.addItem(f"── {msg}  示例：{ex_txt} ──")
+        self.main.set_status(msg)
+        self.btn_fix_sysattr.setEnabled(True)
 
     # ──────── ② 联网巡检：错位检测 ────────
     def start_mismatch(self):
@@ -740,3 +779,23 @@ class AuditPage(BasePage):
         self.btn_backfill_scan.setEnabled(True)
         self.list_backfill.addItem(f"── 补全完成：{fixed} 件本体已下载 ──")
         self.main.set_status(f"本体补全完成：{fixed} 件")
+
+
+# R23（2026-09-08 主上实测）：黄色默认图标一键修复
+class FixSysAttrWorker(QThread):
+    """扫描 BOOTH 大类目录，一键修复黄色默认图标：
+    ① 给「三件套齐全但父目录缺 S 位」的目录补 S（R23）；
+    ② desktop.ini 老格式归一化为 shell 标准格式（R24）。
+    纯本地属性位 + ini 文本重写，零下载，秒级完成。"""
+    prog = Signal(str)
+    finished = Signal(dict)
+
+    def __init__(self, roots: list[str]):
+        super().__init__()
+        self.roots = roots
+
+    def run(self):
+        def _cb(m):
+            self.prog.emit(m)
+        result = bc.fix_folder_system_attr(self.roots, on_progress=_cb)
+        self.finished.emit(result)

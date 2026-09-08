@@ -997,6 +997,20 @@ def _verify_icon_contract(ico_path, ini_path, folder_path):
         ctypes.windll.kernel32.SetFileAttributesW(str(folder_path), a | 0x01)
 
 
+# R24（2026-09-08 主上实测钦定）：desktop.ini 的 shell 原生标准格式。
+# 旧版只写「[.ShellClassInfo]\nIconResource=...」（无 [ViewState]/IconIndex 段）→
+# Explorer 不认 → 目录永远黄色默认图标。标准格式带 [ViewState] FolderType=Generic
+# + IconResource + IconIndex=0（CRLF 行尾），与资源管理器「更改图标」写入的形态一致。
+# 单一来源：make_folder_icon / normalize_desktop_ini / fix_folder_system_attr 全部引用。
+DESKTOP_INI_STANDARD = (
+    "[ViewState]\r\n"
+    "FolderType=Generic\r\n"
+    "[.ShellClassInfo]\r\n"
+    "IconResource=.folder_icon.ico,0\r\n"
+    "IconIndex=0\r\n"
+)
+
+
 def make_folder_icon(cover_path: Path, folder_path: Path):
     """cover.jpg → .folder_icon.ico + desktop.ini（三件套），含完整性契约。
 
@@ -1004,6 +1018,18 @@ def make_folder_icon(cover_path: Path, folder_path: Path):
       - 宽幅 cover 直接 save 会生成非正方形 ICO（256x154）→ 缩略图居中小图 → 先贴正方形画布
       - desktop.ini/ico 缺 H/S 属性 → Explorer 拒读 → 写完自检三件套
       - 写完不校验 → Hermes 类 agent 留残缺 desktop.ini → 自检 raise IconContractError
+    血泪坑（2026-09-08 主上实测）：
+      - 父目录只设 R(0x01) 漏 S(0x04) → Explorer 永远不读 desktop.ini → 黄色默认图标
+        且重启电脑也无效（不是 IconCache 缓存问题，是 desktop.ini 从未被读过）
+      - 修法：父目录设 R(0x01) | S(0x04)，且写完后向父目录发 SHCNE_UPDATEDIR
+        （让打开父目录视图的 Explorer 重新读 desktop.ini 缓存）
+    血泪坑（2026-09-08 傍晚 R24，26 目录实锤）：
+      - S 位补全 + 重启电脑后仍黄的目录，根因是 desktop.ini 为旧版「裸格式」
+        （只有 [.ShellClassInfo]+IconResource，缺 [ViewState]/IconIndex 段）→
+        shell 层 SHGetSetFolderCustomSettings 读回空、SHGetFileInfo 恒返回默认索引
+      - 修法：desktop.ini 统一写 shell 原生标准格式 DESKTOP_INI_STANDARD
+        （[ViewState] FolderType=Generic + IconResource + IconIndex=0, CRLF），
+        26 个目录重写后全部立即恢复（用户当场确认）
     """
     if not cover_path or not cover_path.exists():
         raise IconContractError(f"cover 缺失：{cover_path}")
@@ -1015,13 +1041,7 @@ def make_folder_icon(cover_path: Path, folder_path: Path):
         sizes = [(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)]
         ico_path = folder_path / ".folder_icon.ico"
         ini_path = folder_path / "desktop.ini"
-        ini_content = (
-            "[ViewState]\r\n"
-            "FolderType=Generic\r\n"
-            "[.ShellClassInfo]\r\n"
-            "IconResource=.folder_icon.ico,0\r\n"
-            "IconIndex=0\r\n"
-        )
+        ini_content = DESKTOP_INI_STANDARD
         for p in (ico_path, ini_path):
             if p.exists():
                 try:
@@ -1033,7 +1053,10 @@ def make_folder_icon(cover_path: Path, folder_path: Path):
         set_hidden(str(ini_path))
         set_hidden(str(ico_path))
         attrs = ctypes.windll.kernel32.GetFileAttributesW(str(folder_path))
-        ctypes.windll.kernel32.SetFileAttributesW(str(folder_path), attrs | 0x01)
+        # R23（2026-09-08 钦定）：父目录必须 R(0x01) | S(0x04) 双设，
+        # 否则 Explorer 拒读 desktop.ini（与 ico/ini 自身的 H+S 同理）。
+        # ⚠️ 父目录绝不能加 H(0x02) —— 加了资源管理器默认隐藏，整个目录从视图中消失！
+        ctypes.windll.kernel32.SetFileAttributesW(str(folder_path), attrs | 0x01 | 0x04)
         _verify_icon_contract(ico_path, ini_path, folder_path)
         # 通知 Explorer 刷新图标缓存
         try:
@@ -1042,6 +1065,12 @@ def make_folder_icon(cover_path: Path, folder_path: Path):
             ctypes.windll.ole32.CoTaskMemFree(pidl_item)
         except Exception:
             ctypes.windll.shell32.SHChangeNotify(0x00008000, 0x0000, None, None)
+        # R23：额外发 SHCNE_UPDATEDIR 给父目录，让正打开父目录视图的 Explorer
+        # 主动重读 desktop.ini 缓存并刷新子目录视图。
+        try:
+            ctypes.windll.shell32.SHChangeNotify(0x00000005, 0x0000, None, None)  # SHCNE_UPDATEDIR
+        except Exception:
+            pass
     except IconContractError:
         raise
     except Exception as e:
@@ -1053,6 +1082,118 @@ def make_folder_icon(cover_path: Path, folder_path: Path):
             except Exception:
                 pass
         raise IconContractError(f"图标设置失败（已清理残缺 desktop.ini）：{e}")
+
+
+# ── 全库修复：补 System 标志（R23，2026-09-08 主上实测）─────────────
+def normalize_desktop_ini(folder_path) -> bool:
+    """把目录的 desktop.ini 归一化为 shell 原生标准格式（R24）。
+
+    幂等：已是标准格式（含 [ViewState] 与 IconIndex=）→ 不动，返回 False；
+    旧版裸格式（缺任一字段）→ 重写为 DESKTOP_INI_STANDARD。标准格式是裸格式的
+    超集（裸格式的 IconResource 语义被完整保留），因此重写无信息丢失。
+    写前清属性（防 PermissionError），写后补 H+S，并发 SHCNE_UPDATEITEM/UPDATEDIR。
+
+    返回 True 表示发生了重写；目录无三件套/无 ini 时返回 False。
+    """
+    folder_path = Path(folder_path)
+    ini_path = folder_path / "desktop.ini"
+    if not ini_path.exists():
+        return False
+    try:
+        raw = ini_path.read_bytes()
+    except Exception:
+        return False
+    if raw[:2] == b"\xff\xfe":
+        txt = raw.decode("utf-16-le", errors="replace")
+    elif raw[:3] == b"\xef\xbb\xbf":
+        txt = raw.decode("utf-8", errors="replace")
+    else:
+        txt = raw.decode("utf-8", errors="replace")
+    if "[ViewState]" in txt and "IconIndex=" in txt:
+        return False  # 已是标准格式
+    K = ctypes.windll.kernel32
+    try:
+        K.SetFileAttributesW(str(ini_path), 0x80)  # 清 H/S → NORMAL
+        ini_path.write_text(DESKTOP_INI_STANDARD, encoding="utf-8")
+    except Exception as e:
+        raise IconContractError(f"desktop.ini 归一化失败：{ini_path} ({e})") from e
+    a = K.GetFileAttributesW(str(ini_path))
+    K.SetFileAttributesW(str(ini_path), a | 0x02 | 0x04)  # H+S
+    try:
+        ctypes.windll.shell32.SHChangeNotify(0x2, 0x5, str(folder_path), None)
+        ctypes.windll.shell32.SHChangeNotify(0x5, 0x5, str(folder_path.parent), None)
+    except Exception:
+        pass
+    return True
+
+
+def fix_folder_system_attr(roots: list[str] | None = None,
+                           on_progress=None) -> dict:
+    """扫描 BOOTH 大类目录（3D服饰/3D发型/...），一键修复「黄色默认图标」。
+
+    两项修复（R23 + R24）：
+      1. 补 S(0x04)+R(0x01) 给「三件套齐全但父目录缺 S 位」的目录 —— 否则
+         Explorer 根本不读 desktop.ini（重启电脑也无效）。
+      2. desktop.ini 归一化为 shell 原生标准格式（normalize_desktop_ini）——
+         旧版裸格式（缺 [ViewState]/IconIndex）同样不被 shell 采用。
+    非破坏性：仅设文件系统属性位 + 重写 desktop.ini 文本，零本体文件增删。
+    返回 {scanned, fixed, normalized, failed, examples: [...]}（兼容旧键）。
+    """
+    DEFAULT_ROOTS = [
+        r"G:\Lin_File\BOOTH\3D服饰",
+        r"G:\Lin_File\BOOTH\3D发型",
+        r"G:\Lin_File\BOOTH\3D饰品",
+        r"G:\Lin_File\BOOTH\3D模型",
+        r"G:\Lin_File\BOOTH\3D工具",
+        r"G:\Lin_File\BOOTH\3D动作",
+    ]
+    if not roots:
+        roots = DEFAULT_ROOTS
+    SHELL = ctypes.windll.shell32
+    fixed = 0; normalized = 0; failed = 0; examples: list[str] = []
+    for root in roots:
+        rp = Path(root)
+        if not rp.exists():
+            continue
+        for d in rp.iterdir():
+            if not d.is_dir():
+                continue
+            ini = d / "desktop.ini"; ico = d / ".folder_icon.ico"
+            if not (ini.exists() and ico.exists()):
+                continue
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(str(d))
+            if attrs != 0xFFFFFFFF and not (attrs & 0x04):
+                new = attrs | 0x04 | 0x01 | 0x20  # S + R + A（注意：禁 H 隐藏！）
+                try:
+                    ctypes.windll.kernel32.SetFileAttributesW(str(d), new)
+                    fixed += 1
+                    if len(examples) < 3:
+                        examples.append(d.name)
+                    # 通知 Explorer 刷新父目录视图
+                    try:
+                        SHELL.SHChangeNotify(0x00000005, 0x0000, None, None)  # SHCNE_UPDATEDIR
+                    except Exception:
+                        pass
+                except Exception as e:
+                    failed += 1
+                    if on_progress:
+                        on_progress(f"  失败: {d.name} ({e})")
+            # R24：desktop.ini 老格式 → 归一化为标准格式（幂等）
+            try:
+                if normalize_desktop_ini(d):
+                    normalized += 1
+                    if len(examples) < 3:
+                        examples.append(d.name + " (ini归一化)")
+            except IconContractError as e:
+                failed += 1
+                if on_progress:
+                    on_progress(f"  ini归一化失败: {d.name} ({e})")
+            if on_progress and (fixed + normalized + failed) % 50 == 0:
+                on_progress(f"  进度: 补S {fixed} / 归一化 {normalized} / 失败 {failed}")
+    if on_progress:
+        on_progress(f"完成：补S {fixed} 件 / ini归一化 {normalized} 件 / 失败 {failed} 件")
+    return {"scanned": fixed + normalized + failed, "fixed": fixed,
+            "normalized": normalized, "failed": failed, "examples": examples}
 
 
 # ── 搜索 / 评分（按名搜索核心）──────────────────────────────────
