@@ -228,6 +228,31 @@ def _describe_restore(restored: int, failed: list, old_dir: Path) -> str:
 
 
 def archive_item(iid: str, root, session, move_source: str = None, force: bool = False) -> dict:
+    """归档一件 Booth 商品 —— 对外的稳定契约入口。
+
+    **契约（R24 起）**：本函数**永不抛异常**。无论内部发生什么，都返回含 `status`
+    字段的 dict（失败时 `status == "err"`）。调用方**无需**自行包 try；包了亦无害。
+
+    设计理由：原实现未声明该契约，三个批量调用点因此各自猜测 ——
+    `ArchiveWorker` / `FixMismatchWorker` 包了 try，`DragWorker` 没包，同一次异常
+    在两个调用点产生不同后果。实测（tests/_probe_batch_abort.py）：注入单件异常时
+    DragWorker 4 件只处理 1 件、3 件静默丢弃且 `finished` 不发射（UI 状态机悬挂），
+    而另两个调用点 4/4 不受影响。把不变式固化在函数边界上，比要求每个调用点都记得
+    包 try 更可靠 —— 未来新增的调用点自动受保护。
+
+    真正的实现是 `_archive_item`（内部逻辑与本次加固前逐字一致）；本函数只做最外层
+    兜底。兜底必须留痕（diag.error），否则等于用「静默返回 err」换掉「崩溃」。
+    """
+    try:
+        return _archive_item(iid, root, session, move_source, force)
+    except Exception as e:
+        diag.error(f"归档异常：{type(e).__name__}: {e}",
+                   scope="archive_item", iid=iid)
+        return {"status": "err", "msg": f"归档异常：{type(e).__name__}: {e}",
+                "id": iid}
+
+
+def _archive_item(iid: str, root, session, move_source: str = None, force: bool = False) -> dict:
     """把一件 Booth 商品归档到 root/类目/ID_标题/。
 
     返回状态：
@@ -240,6 +265,7 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
     R7+1 强化：扫整个 BOOTH 库找同 ID（id_xxx 命名的目录），若在不同类目下 → 报 mismatch，
     避免主上疑惑「我手动移到了 3D模型 为啥不直接落 3D发型」。
     R17：fetch 失败不妄断 —— 用 classify_item_state 严谨判定（网络可达 + 404 才算下架）。
+    R24：本函数可抛异常，由外层 `archive_item` 统一兜底 —— 请勿直接从 UI 调用本函数。
     """
 
     def _move_into(src_path, dst_dir):
