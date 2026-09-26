@@ -4,5 +4,6 @@
 
 | 板块路径 | 干什么 |
 |---|---|
-| `docs/boothkeeper/v1/` | 流程规范接入（devskill 落地）+ 根目录治理：建文档体系、收敛散落脚本、定义红线与接手协议 |
+| `docs/boothkeeper/v1/` | dev-flow 流程本体与决策记录：需求文档（`0N-*.md`）、执行计划 `plan.md`（进度唯一真源）、`worklog/`、`review/`、`BOUNDARY.md`、`DISCIPLINE.md`。已含 P0~P3：规范接入、根目录治理、门面与可移植性修正、遗留项处置（诊断通道 / 回滚加固 / Worker 基类 / `booth_core` 拆分） |
+| `tests/` | 回归与检查脚本（标准库 `unittest`，无 pytest 依赖）：`test_rollback.py`(5)、`test_archive_flow.py`(6)、`check_module_deps.py`、`check_proxy_single_source.py` 为常驻检查；`_` 前缀者为一次性/度量工具（`_smoke_offscreen.py`、`_compare_worker_contract.py`、`_count_silent.py`、`_count_proxy_writes.py`、`_split_booth_core.py`）。**红线：全部用例只在 `tempfile` 临时目录内操作，绝不触碰 BOOTH 资产库（BOUNDARY B-1）** |
 | `archive/` | 历史过程产物归档区：一次性脚本 30 / 发版草稿 14 / 验收评分表 5 / 设计文档 4。只搬运不改写，索引见 `archive/README.md` |

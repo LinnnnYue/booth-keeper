@@ -33,13 +33,22 @@
 - [x] README 修正：改写两处 `preview_build/` 引用；`[booth_core.py:42-77](booth_core.py)` 改为标准 GitHub 行号链接格式 — 验收：README 所有相对链接指向的路径在仓库树中真实存在 ✅
 - [x] 评审 `archive_util.py` 的静默失败点 — 产出 `review/2026-09-27-静默失败点评审.md`：全项目 36 处静默点逐处定性（含所属函数名），处置 7 处，残留 29 处已分三类（保持 18 / 建议加固 8 / 高危 3）— 验收：记录含每处现行行为与建议处置，附脚本化复现方式 ✅
 
-## P3 — 遗留项独立立项（未开工）
+## P3 — 遗留项处置 · R23 完成
 
-> 以下各项均**未开工**，须先写需求文档 → 评审 → 再进 plan。R17 仅登记，不启动。
+> 需求文档：[`02-遗留项处置.md`](02-遗留项处置.md)（四节 + 共同红线）。
+> 实施顺序：2.1 通道 + 2.2 加固 → 2.3 QThread → 2.4 拆分；测试网为 2.4 前置。
+> 本轮**偏离立项方案 4 处**，均已在需求文档对应小节与 worklog `[v1]-raphael-20260927-0230` 如实登记：
+> ① 模块数 4 → **6**（`bk_net` 单文件 968 行触犯 <620 口径）；
+> ② Worker 数 10 → **11**（立项漏计 `audit_page` 2 个）；
+> ③ 基类统一 `finished` 信号**否掉**（会破坏信号契约不变的验收口径）；
+> ④ 2.3-1 验收由文本 `rg` 改 **AST** 判定（文本口径无法区分代码与注释）。
 
-- [ ] `booth_core.py` 单体拆分（1418 行 → 网络层 / 领域映射 / Windows Shell 集成 / 文件名与搜索 四模块）— 验收口径待需求文档确定。出处：原审查 T8
-- [ ] QThread 样板重构（抽共享 Worker 基类，7+ 处重复装配）— 验收口径待需求文档确定。出处：原审查 T9。注：R17 后代理装配已收敛为单一真源，本项剩余价值缩小
-- [ ] `force` 重归档回滚路径加固（`archive_item` 三处高危静默点：L285 / L312 / L349）— 验收口径待需求文档确定；**须先补真机演练用例**（磁盘满 / 文件被占用 / 进程被杀 / 半还原中间态）。出处：静默失败点评审 §4
-- [ ] 后台异常统一上报通道（状态栏或日志面板，替代打包后不可见的 `print`）— 验收口径待需求文档确定。出处：静默失败点评审 §3
+- [x] 写 P3 四项需求文档 — 产出 [`02-遗留项处置.md`](02-遗留项处置.md)：每项含现象/目标/方案与取舍/不做什么/验收口径五段，并定实施顺序与依赖 — 验收：五段标题齐全，含 4 处取舍论证与「附：四项共同红线」✅
+- [x] 建回归测试网（2.4 前置）— 产出 `tests/test_rollback.py`（5 用例）、`tests/test_archive_flow.py`（6 用例）、`tests/check_module_deps.py`、`tests/check_proxy_single_source.py`、`tests/_smoke_offscreen.py`、`tests/_compare_worker_contract.py` — 验收：全部可独立重跑，退出码 0 ✅
+- [x] 后台异常统一上报通道 — 新增 `diag.py`（115 行，零依赖）+ `pages/diag_panel.py`（207 行）+ `main_window` 桥接与状态栏入口；替换 11 处 `print`（逻辑层残留 0）；加固 8 处静默点 — 验收：环形缓冲 FIFO / 跨线程 sink / 未注册时回落 stdout / UI 未就绪不崩 / 计数为「未读」语义，逐项实测通过 ✅
+- [x] `force` 重归档回滚路径加固 — 提取 `_restore_from_archive` / `_describe_restore` / `_is_legacy_dir`，三处调用点统一；消除「部分还原却报完全还原」的假成功消息，并修掉 `旧版本_*` 套娃缺陷 — 验收：`tests/test_rollback.py` 5/5 通过；半还原消息为「仅还原 1 项，1 项仍在 旧版本_2026-09-27_015609/（旧B.bin）」与磁盘一致 ✅
+- [x] QThread 样板提取 — 新增 `pages/workers.py` 的 `BoothTask(QThread)` 模板方法基类，迁移 **11** 个 Worker；构造函数去掉 `proxy` / `proxy_url`；另发现并修掉 2 处 UI 线程内代理绕过（`search_page` / `dragdrop_page`）— 验收：`tests/check_proxy_single_source.py` 违规 0（含 1 条登记白名单）；`tests/_compare_worker_contract.py` 11 类信号契约差异 0；空 URL 污染场景由 `{'http':'','https':''}` 变为 `{}` ✅
+- [x] `booth_core.py` 单体拆分 — 1439 行 → `bk_net`(449) / `bk_search`(307) / `bk_shell`(304) / `bk_local`(258) / `bk_text`(177) / `bk_domain`(99)，`booth_core.py` 改为 116 行门面（模块级 `__getattr__` 动态转发）— 验收：公共符号 51 = 51（差异集为空）；调用点消失 0 个；全部模块 < 620 行；`tests/test_archive_flow.py` 6/6 与 `tests/test_rollback.py` 5/5 全绿；离屏启动 `title`/`pages` 与拆分前一致 ✅
+- [x] 回填 worklog 并提交推送 — worklog 条目 `[v1]-raphael-20260927-0230` 记实测与四处偏离；需求文档 3 小节按实测更正 — 验收：`git log --format=%h -1` 见本轮提交，`git ls-remote origin main` 与本地 HEAD 一致 ✅
 
-<!-- 新阶段在末尾顺延编号追加（P3、P4…）；新需求先走需求文档评审再插入或新起 PX。 -->
+<!-- 新阶段在末尾顺延编号追加（P4、P5…）；新需求先走需求文档评审再插入或新起 PX。 -->

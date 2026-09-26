@@ -10,6 +10,48 @@
 
 ---
 
+## [v1]-raphael-20260927-0230 R23：P3 四项全量落地（诊断通道 / 回滚加固 / Worker 基类 / booth_core 拆分） — 2026-09-27 02:30 开始
+
+- **执行者**: 拉斐尔（WorkBuddy Agent，机器：DESKTOP-N3O6SC2）
+- **目标**: 主上指令「未做的接着做」——把 `plan.md` P3 登记的四项遗留项（2.1 异常上报通道 / 2.2 force 回滚加固 / 2.3 QThread 样板提取 / 2.4 booth_core 拆分）逐项落地并验收。纪律：先写需求文档 → 评审 → 再进 plan；做一个勾一个；实测数据不用估算值。
+- **上下文**: 依赖 R17 末次提交 `4d3c6b6`（P0+P1+P2 全绿）。前置产出 [`02-遗留项处置.md`](../02-遗留项处置.md) 定四项的现象/目标/方案与取舍/不做什么/验收口径与实施顺序（2.1+2.2 → 2.3 → 2.4，测试网为 2.4 前置）。
+- **进展**:
+  1. **需求文档先行**：产出 `02-遗留项处置.md`（四节五段 + 依赖图 + 四项共同红线），未开工即定死验收口径。
+  2. **2.1 诊断通道**：新增 `diag.py`（115 行，零依赖）与 `pages/diag_panel.py`（207 行）；`main_window` 加 `_DiagBridge(QObject)` 跨线程转发、状态栏常驻入口、面板打开/清空回传计数；诊断初始化**提到 `load_config()` 之前**。替换 11 处 `print`（逻辑层残留 0），另加固 8 处静默点。
+  3. **2.2 回滚加固**：先建演练环境（`tests/test_rollback.py`，5 用例，故障注入 `shutil.move`），**基线跑出 2 处真实缺陷**后再动手改。提取 `_restore_from_archive` / `_describe_restore` / `_is_legacy_dir`，三处调用点归一。
+  4. **2.3 Worker 基类**：新增 `pages/workers.py` 的 `BoothTask(QThread)`（模板方法 `work(session)` + 异常兜底 + `needs_session` 开关），迁移 **11** 个 Worker；构造函数去掉 `proxy`/`proxy_url`；**另发现并修掉 2 处 UI 线程内代理绕过**（`search_page`、`dragdrop_page`）。
+  5. **2.4 拆分**：AST 机械分段工具 `tests/_split_booth_core.py` 把 1439 行拆为 6 模块，`booth_core.py` 改为 116 行门面（模块级 `__getattr__` 动态转发）。
+  6. **测试网**：`check_module_deps.py`（跨模块引用 AST）、`check_proxy_single_source.py`（代理真源 AST + 白名单）、`test_rollback.py`(5)、`test_archive_flow.py`(6)、`_smoke_offscreen.py`、`_compare_worker_contract.py`、`_count_silent.py`、`_count_proxy_writes.py`。
+  7. **验收记录**：产出 [`review/2026-09-27-P3四项验收记录.md`](../review/2026-09-27-P3四项验收记录.md)（26 条口径逐条对应实测值 + 量化变化 + 偏离登记 + 残留项）。
+- **验证**（2026-09-27 实测，全部退出码 0）:
+  - `python tests/check_module_deps.py` → 合计缺失 = 0（6 模块全 OK）
+  - `python tests/check_proxy_single_source.py` → 扫描 24 文件，违规 **0**（白名单 1 条）
+  - `python tests/test_rollback.py` → **Ran 5 tests, OK**；半还原消息 = 「仅还原 1 项，1 项仍在 旧版本_2026-09-27_015609/（旧B.bin）」，`dest` 根 = `['旧A.bin']`（消息与磁盘一致）
+  - `python tests/test_archive_flow.py` → **Ran 6 tests, OK**（ok / exists / mismatch / force 留档 / delisted / 连不上不妄断）
+  - `python tests/_compare_worker_contract.py 4d3c6b6` → 比对 11 类，**不一致 = 0**
+  - `QT_QPA_PLATFORM=offscreen python tests/_smoke_offscreen.py` → `title = Booth Keeper v1.5.6`、`pages = ['links','drag','search','audit','settings']`、sink 收报 3/3、面板可见
+  - 符号等价：`4d3c6b6:booth_core.py` 公共符号 51 vs 工作区 51，**丢失 0 / 新增 0**
+  - 调用点集合：`import booth_core` 的原有文件**消失 0**，新增 3（门面自身 / `pages/workers.py` / 拆分工具）
+  - 模块行数：`449 / 307 / 304 / 258 / 177 / 116 / 99`，全部 < 620
+  - 静默点（R17 评审 §5 同口径）：**29 → 21**；手工写 `.proxies`（AST）：**12 → 1**（白名单内「直连兜底后还原」，非配置代理）
+  - `compileall` 全量通过
+- **决策与坑**:
+  - **偏离立项 4 处，全部登记**（详见 `02-*.md` 对应小节 + 验收记录 §三）：①模块数 **4 → 6**（`bk_net` 单文件 968 行触犯 <620 口径，故再分出 `bk_local` / `bk_search`，边界仍取自原 `# ── 分段 ──` 注释）；②Worker 数 **10 → 11**（立项漏计 `audit_page` 2 个，实施以 AST 枚举复核）；③基类统一 emit `finished` **否掉**（11 个完成信号名/参数各异且已被 UI 直连，统一即违反验收口径）；④2.3-1 验收由文本 `rg` 改 **AST**（文本口径无法区分代码与注释，误报漏报双全）。
+  - **纪律偏离 1 处**：需求文档红线第 4 条「每项独立提交」未达成，实际合并为单一提交 `6fb5dc8`。原因：四项在同一工作区交错——`diag.py` 是 2.2/2.3 共同前置，`archive_util.py` 同时含 2.1（print→diag）与 2.2（回滚加固）。追溯性分拆需按 hunk 切分并逐个验证中间提交可编译，风险高；与红线第 2 条「零回归优先于整洁」冲突时从后者。已在验收记录 §四 给出按文件组的回退映射作为补偿。
+  - **坑 1（UI 未就绪崩溃）**：`load_config()` 在 `build_ui()` 之前运行，配置损坏告警触发 sink 时 `self.diag_btn` 尚不存在 → `AttributeError` 反噬启动流程，即「诊断通道自己成为故障源」。修法：`getattr(self, "diag_btn", None)` 守卫，记录照常入缓冲与计数，仅跳过状态栏刷新。已补为验收口径 6。
+  - **坑 2（计数语义）**：面板清空/查看后按钮计数不归零，数字会伪装成「有持久故障」的噪音。修法：面板加 `cleared = Signal()`，主窗口在打开面板与收到 `cleared` 时归零（「未读」而非「累计」语义）。已补为验收口径 7。
+  - **坑 3（回滚假成功，真实缺陷）**：基线演练直接跑出 2 处失败——`test_03` 消息写「（留档内容已还原）」而 `旧B.bin` 实际仍在留档目录（**磁盘状态 ≠ 消息**，正是 R17 判高危的原因）；`test_04` 还原时把既有 `旧版本_*` 目录当作待还原项搬走，形成**套娃嵌套**。二者均为演练暴露，非理论推演。
+  - **坑 4（跨模块私有名）**：`score_and_pick` 在 `bk_search` 内 `NameError: _json_cache not defined` —— `import *` 不带私有名。以 `tests/check_module_deps.py` 静态扫出全部同类风险（`_parse_price`、`_thumb_from_json`）并补显式 import。
+  - **坑 5（拆分工具二次运行）**：`_split_booth_core.py` 重跑会把已生成的门面当输入源，报「未分配符号 `_MODULES`/`__all__`/`__getattr__`」。已加输入源守卫（检出 `__getattr__` 或 `import bk_domain as _bk_domain` 即 `exit(2)` 不写盘），并从备份 `/tmp/bk_bak/booth_core.py.orig` 复原。
+  - **坑 6（门面为何用 `__getattr__`）**：静态 `from bk_net import *` 有两个具体缺陷——`PROXY` 是**可变**模块级变量，`apply_proxy()` 改的是 `bk_net.PROXY`，静态导入会让 `booth_core.PROXY` 变成一份**快照**导致读写不一致；且私有名不被 `import *` 带走。动态转发使 `bc.anything` 恒等于真源当前值。代价（IDE 静态补全弱化）已在门面文件头写明。
+  - **坑 7（测试伪绿，自查发现）**：`test_archive_flow.py::test_05` 初版把 mock 打在 `au` 而非 `au.bc` 上，导致**真的发了网络请求**去判定 `1234567` 是否下架——断言恰好通过，属伪绿。修正后全套耗时由 1.547s 降至 0.057s，这条耗时差即是证据。**教训：测试跑得快才是本地判定的旁证；耗时不正常要怀疑是否漏出网络。**
+  - **坑 8（估数打脸）**：重建「手工写 `.proxies`」基线时先按印象写「13 处」，实测为 **12 处**（`booth_core` 1 / `audit_page` 5 / `dragdrop_page` 2 / `links_page` 1 / `search_page` 3），已在验收记录更正。**估算值不入文档，一律先跑脚本。**
+- **代码状态**: `已 push booth-keeper@main 6fb5dc8`（代码层：8 改 + 15 增，含 6 拆分模块、`diag.py`、`pages/{workers,diag_panel}.py`、`tests/` 8 个脚本）。文档层（`plan.md` 勾选、`02-*.md` 实测更正、`review/2026-09-27-P3四项验收记录.md`）随本条一并提交。
+- **状态**: ✅完成（P3 四项 26 条验收口径全绿；4 处立项偏离 + 1 处纪律偏离已登记；5 项残留已入验收记录 §五）
+- **下一步**: ①文档层提交并推送；②`tests/` 建议纳入 CI 或 pre-push 门禁（当前需手动重跑）；③残留项 §五-5（`archive_item` 内 `bc.fetch_item` / `classify_item_state` 未包 try，网络异常直接抛出）若要做，属独立立项，须先过需求文档。
+
+---
+
 ## [v1]-raphael-20260927-0110 R17：主上拍板后逐项处置（P0 收尾 + P1 + P2 全量） — 2026-09-27 01:10 开始
 
 - **执行者**: 拉斐尔（WorkBuddy Agent，机器：DESKTOP-N3O6SC2）
