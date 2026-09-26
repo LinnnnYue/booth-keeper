@@ -7,6 +7,7 @@ import json
 import webbrowser
 from pathlib import Path
 import requests
+import diag
 
 GITHUB_API = "https://api.github.com/repos/LinnnnYue/booth-keeper/releases/latest"
 GITHUB_RELEASES = "https://github.com/LinnnnYue/booth-keeper/releases"
@@ -22,13 +23,19 @@ def _resolve_proxies(proxy: bool | None) -> dict | None:
     False → 强制直连，忽略全局设定
 
     原实现把 127.0.0.1:20122 硬编码在本模块，与设置页真源重复；
-    现统一委托 booth_core.proxy_map()。"""
+    现统一委托 booth_core.proxy_map()。
+
+    R24：解析失败不再完全静默 —— 原先静默 return None 会使本次请求转为直连，
+    国内直连 GitHub 通常超时，最终 UI 只提示「请检查网络/代理设置」，把用户引向
+    检查代理设置本身，而真因（代理配置读取环节失败）无任何留痕。此处加 warn 留痕，
+    返回值不变（仍为 None，降级行为保持）。"""
     if proxy is False:
         return None
     try:
         from booth_core import proxy_map
         return proxy_map()
-    except Exception:
+    except Exception as e:
+        diag.warn(f"代理解析失败，本次更新检查将直连：{e}", scope="updater")
         return None
 
 
@@ -65,6 +72,11 @@ def parse_local_version() -> str:
                 return m.group(1)
         except Exception:
             pass
+    # R24：三源全失败不再静默 —— 回落值 "0.0.0" 会被 check_update 解析为 (0,0,0)，
+    # 与远端比较后恒判「有新版本」，弹窗显示「当前版本：0.0.0」，用户无从分辨这是
+    # 真实版本号还是读取失败。此处加 warn 留痕，返回值不变（保持向后兼容）。
+    diag.warn("版本号三源均不可用，回落 0.0.0（版本比较结果不可信）",
+              scope="updater")
     return "0.0.0"
 
 
