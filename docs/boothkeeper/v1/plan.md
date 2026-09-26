@@ -59,12 +59,12 @@
 > 本轮**收窄了归档记录的 1 处推断**：`fetch_item` 内部已有 `try`，真实网络故障
 > **不会**穿透；真正暴露面是「契约未声明 + 调用方各自猜测」，详见 §3.1。
 
-- [x] 写 P4 需求文档 — 产出 [`03-残留项处置.md`](03-残留项处置.md)：现象段全部引用本轮实测（`tests/_probe_exception.py` / `tests/_probe_batch_abort.py`），含处置分界表、4 项五段论证、3 项不做项判据、口径说明 — 验收：五段标题齐全，10 条验收口径编号连续，不做项逐条附判据 ✅
+- [x] 写 P4 需求文档 — 产出 [`03-残留项处置.md`](03-残留项处置.md)：现象段全部引用本轮实测（先跑两个**只读探针**取证：逐类异常注入 + 三个批量调用点对照；探针在结论转入正式用例后已删除，不留悬空脚本），含处置分界表、4 项五段论证、3 项不做项判据、口径说明 — 验收：五段标题齐全，10 条验收口径编号连续，不做项逐条附判据 ✅
 - [x] `archive_item` 异常契约兜底（高危）— 最外层统一收口，契约改为「永不抛异常，永远返回 dict」；原函数体改名 `_archive_item` 零侵入（包装 23 行 / 原体 203 行）— 验收：4 类注入异常 + `classify_item_state` 异常共 5 场景均返回 `status="err"` 不抛；`DragWorker` 处理件数由 **1/4 → 4/4**、`finished` 由**未发射 → 已发射** ✅
 - [x] 兜底路径可观测 — 兜底分支接 `diag.error`，`scope="archive_item"` 且 `ctx["iid"]` 可定位 — 验收：注入时收到 `scope="archive_item"` / `iid=2000002` 的 error 记录；正常归档路径 error 记录数 = 0 ✅
 - [x] `updater` 两处静默留痕 — `_resolve_proxies` 代理解析失败与 `parse_local_version` 三源全失败，各加 `diag.warn`（返回值均不变）— 验收：两处各产生 1 条 warn；反向用例（`proxy=False` 强制直连 / 取到版本号 / 降级链第二级命中）记录数均为 0，无误报 ✅
-- [x] 建异常契约测试网 — 新增 `tests/test_archive_contract.py`（14 用例，对应验收口径 1~10）— 验收：`Ran 14 tests` / `OK`，退出码 0，耗时 0.245s（无真实网络）✅
+- [x] 建异常契约测试网 — 新增 `tests/test_archive_contract.py`（9 用例，口径 1~7）+ `tests/test_updater_diag.py`（5 用例，口径 8~10）+ 共享辅助 `tests/_diag_capture.py`；**按主题拆成两个文件**是为让两次代码提交各自可验证（单文件跨两项则中间提交必然红）— 验收：分别 `Ran 9 tests` / `Ran 5 tests`，均 `OK`，退出码 0，不发起真实网络 ✅；另以 `git worktree` 在两个提交点独立重跑，均绿
 - [x] 全量回归 — 依赖检查 缺失 0 / 代理真源 违规 0 / 回滚演练 5/5 / 归档主流程 6/6 / Worker 契约 差异 0 / 离屏冒烟 rc=0 / `py_compile` rc=0 — 验收：全部通过；归档主流程 6 条路径（`ok`/`exists`/`mismatch`/`force` 留档/`delisted`/连不上不妄断）逐条复核零回归；静默点 21 **与 P3 后持平**（符合需求文档口径说明：本轮以消除「无留痕」为目标，不以降低 `except: pass` 计数为目标）✅
-- [x] 回填文档并提交推送 — plan 勾选 + review 验收记录 + worklog 条目；清理两个一次性探针 — 验收：`git ls-remote origin main` 与本地 HEAD 一致 ✅
+- [x] 回填文档并提交推送 — plan 勾选 + review 验收记录 + worklog 条目；清理两个一次性探针；另以 `R24-4` 补记推送通道受阻与解法 — 验收：**远端 `main` = 本地 `HEAD`**（经 `gh api` 核验，推送后即刻核对）✅。⚠️ **验证手段已变**：`git ls-remote` / `git push` 因 `github.com` 被阻断不可用，本轮实际走 **Git Data API**（`blob→tree→commit→ref`，逐对象 SHA 校验 + 临时 ref 预检），各提交 SHA 与本地逐字节一致、无分叉，详见验收记录 §八。**注：验收口径锚定「远端与本地是否同 SHA」这一结论，不写死具体 SHA 值**——写死会随下一次提交立刻失真
 
 <!-- 新阶段在末尾顺延编号追加（P4、P5…）；新需求先走需求文档评审再插入或新起 PX。 -->
