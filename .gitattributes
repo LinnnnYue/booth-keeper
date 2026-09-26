@@ -1,0 +1,3 @@
+# 规范文件保持 LF，确保「逐字拷贝」语义不被 CRLF 转换破坏
+devskill/** text eol=lf
+docs/** text eol=lf
