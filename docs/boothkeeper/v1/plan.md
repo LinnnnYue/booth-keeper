@@ -20,7 +20,7 @@
 
 > 前置：P0 全部 `[x]`。本阶段第一项产出的**归档清单须经用户确认后**才执行移动。
 
-- [~] 盘出根目录一次性脚本清单，产出「保留 / 归档 / 删除」建议表交用户确认 — 验收：清单覆盖 `rg -l '^# *(_|fix_r|test_r|test_qa|render_preview|preview|verify_)' *.py` 全集，逐项标状态与理由
+- [ ] 盘出根目录一次性脚本清单，产出「保留 / 归档 / 删除」建议表交用户确认（前置：P0 push 确认后开工。候选全集已在 `review/2026-09-27-仓库与代码现状审查.md` 的 T2/T3/T4 列出，可直接作为确认底稿）— 验收：清单覆盖 `rg -l '^# *(_|fix_r|test_r|test_qa|render_preview|preview|verify_)' *.py` 全集，逐项标状态与理由
 - [ ] 建 `legacy/oneoff/` 并把已入库的一次性脚本移入（`_forensic_icons.py`、`_normalize_ini_all.py`、`_test_drag_r21.py`、`_test_force_r22.py`、`fix_r9/r10/r12_*.py`、`render_preview_r5/r6.py`、`render_r7plus_mismatch.py`、`test_qa_r5*.py`、`test_r6.py`、`test_r7*.py`、`test_folder_icon_fix.py`、`render_preview.py`、`preview3/4.py`、`preview_render.py`、`verify_*.py`）— 验收：根目录 `ls *.py` 仅剩 `run.py` / `booth_core.py` / `main_window.py` / `theme.py` / `archive_util.py` / `_version.py`
 - [ ] 处理本地 17 项未跟踪文件：`rel_v1.3.4`~`rel_v1.4.1_notes.md` 与 `作者卡片注入说明.md`、`author_card_template.html` 归入 `docs/releases/` 或 `legacy/`；`_rescue_dl_8545487.py`、`_rewrite_ini_26.py`、`fix_folder_icons.py` 归 `legacy/oneoff/` — 验收：`git status --porcelain` 清空（除刻意保留项，须逐项说明）
 - [ ] 修正 `.gitignore` 与入库内容的一致性：同类性质文件不得一半忽略一半入库 — 验收：`rg 'SCORE_TABLE|preview|verify_' .gitignore` 与实际入库结果无冲突（逐条核对）
