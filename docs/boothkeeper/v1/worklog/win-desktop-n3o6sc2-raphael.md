@@ -22,17 +22,18 @@
   4. 逐字拷贝 `DISCIPLINE.md` / `WORKLOG-PROTOCOL.md` 进 `v1/`。
   5. 项目化根目录 `AGENT.md`（替换占位、改写项目硬约束 5 条、补接手协议）。
   6. 建本 worklog 文件与 `review/` 目录占位。
-- **验证**:
-  - `diff -r devskill/ D:/Lin_Agent/WB-WorkSpace/Github/ClaiDevSkill/devskill/` → 期望无输出（A1）
-  - `diff docs/boothkeeper/v1/DISCIPLINE.md devskill/DISCIPLINE.md` → 期望无输出（A4）
-  - `find docs -type f` → 期望列出 8 类文件（A3）
-  - `python run.py` → 期望主窗口正常启动（A10）
+- **验证**（2026-09-27 实测，全部通过）:
+  - `diff -r devskill/ D:/Lin_Agent/WB-WorkSpace/Github/ClaiDevSkill/devskill/` → 无输出（A1 PASS）
+  - `diff docs/boothkeeper/v1/DISCIPLINE.md devskill/DISCIPLINE.md` 与 `WORKLOG-PROTOCOL.md` 同理 → 无输出（A4 PASS）
+  - `rg '<[^>]{2,}>' AGENT.md` → 无命中（A2 PASS）
+  - `find docs -type f` → 9 个文件就位（A3 PASS）
+  - `QT_QPA_PLATFORM=offscreen` 实例化 BoothKeeper → `title= Booth Keeper v1.5.6`，`pages= 5`（A10 PASS，功能零回归）
 - **决策与坑**:
   - 历史不追补：1.0~1.5.6 的需求文档与 worklog 不回填（成本极高且会引入推测内容），改为「从现在起生效」。已记入需求文档 §3 取舍表。
   - 领域维度选单领域 `docs/boothkeeper/`，不拆多领域——单体桌面应用在当前规模下多领域拆分只增加路径决策成本。
   - 根目录存量脚本采「归档到 `legacy/oneoff/` 而非删除」（可追溯），且须用户确认清单后执行，故 P1 首项标 `[~]`。
   - P2-3（代理默认值改为直连）会改变网络行为，标为「待用户拍板」，未擅自执行。
   - 本次顺序瑕疵如实记录：P0 的脚手架与 `plan.md` 系同步建立（plan 写成时 P0 产物已就位），因此 P0 各勾选凭据为「产物已存在且可复核」，而非「先写 plan 再执行」。后续阶段严格按「先 plan 后执行」。
-- **代码状态**: 仅本地未 push（**有丢失风险，勿依赖**）。未执行 `git commit`——按主上「不做不可逆决定」偏好，推送前需确认（公开仓库，推送即对访客可见）。
-- **状态**: 🔄进行中
-- **下一步**: ①向用户确认归档清单（P1 首项）；②确认是否 push P0 产物至 origin/main；③P2-3 代理策略是否拍板执行。
+- **代码状态**: `已本地 commit 30e06f8（boothkeeper@main，18 文件）`；**未 push**（`main...origin/main [ahead 1]`）。公开仓库，推送前待用户确认。合并前请先 `git pull`。
+- **状态**: 🔄进行中（P0 除 push 外全部完成；P1/P2 未开工）
+- **下一步**: ①确认是否 push `30e06f8` 至 origin/main；②确认 P1 归档清单（根目录 22+ 一次性脚本 / 13 份 `rel_v*.md` / 5 份 `SCORE_TABLE_*.md` 的保留-归档-删除建议表）；③P2-3 代理默认策略（现默认走 `127.0.0.1:20122`）是否改为默认直连。

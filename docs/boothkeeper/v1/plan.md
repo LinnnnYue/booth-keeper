@@ -13,7 +13,7 @@
 - [x] 建 `BOUNDARY.md` 并登记 B-1 ~ B-5 红线 — 验收：每条含「能做/不能做/原因/反复修改史/出处」五字段
 - [x] 建 `docs/boothkeeper/v1/worklog/win-desktop-n3o6sc2-raphael.md` 并写入首条 worklog — 验收：文件头含机器/写作者/协议指向，条目含目标/验证/代码状态/状态
 - [x] 建 `review/` 目录占位 — 验收：`find docs/boothkeeper/v1/review` 返回目录本身（含 `.gitkeep`）
-- [ ] 提交 P0 全部产物 — 验收：`git log -1 -- docs/boothkeeper/` 非空
+- [x] 提交 P0 全部产物 — 验收：`git log -1 --format=%h -- docs/boothkeeper/` = `30e06f8`（18 文件）
 - [ ] 推送至 origin/main（**待主上确认**；公开仓库，推送即对访客可见）— 验收：`git ls-remote origin main` 与本地 HEAD 一致
 
 ## P1 — 根目录治理（收敛历史包袱）
