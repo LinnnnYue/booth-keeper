@@ -14,27 +14,32 @@
 - [x] 建 `docs/boothkeeper/v1/worklog/win-desktop-n3o6sc2-raphael.md` 并写入首条 worklog — 验收：文件头含机器/写作者/协议指向，条目含目标/验证/代码状态/状态
 - [x] 建 `review/` 目录占位 — 验收：`find docs/boothkeeper/v1/review` 返回目录本身（含 `.gitkeep`）
 - [x] 提交 P0 全部产物 — 验收：`git log -1 --format=%h -- docs/boothkeeper/` = `30e06f8`（18 文件）
-- [ ] 推送至 origin/main（**待主上确认**；公开仓库，推送即对访客可见）— 验收：`git ls-remote origin main` 与本地 HEAD 一致
+- [x] 推送至 origin/main（用户于 R17 拍板放行）— 验收：`git ls-remote origin main` = `0faa030`，与本地 HEAD 一致 ✅
 
-## P1 — 根目录治理（收敛历史包袱）
+## P1 — 根目录治理（收敛历史包袱）· R17 完成
 
-> 前置：P0 全部 `[x]`。本阶段第一项产出的**归档清单须经用户确认后**才执行移动。
+- [x] 盘出根目录一次性脚本清单，产出「保留 / 归档 / 删除」建议表交用户确认 — 验收：产出 `review/2026-09-27-根目录处置表.md`，覆盖处置前 66 项全集并逐项标注类别与理由；用户已确认 ✅
+- [x] 建归档目录并把一次性脚本移入 — **偏离原计划**：原拟 `legacy/oneoff/`，实际采用 `archive/scripts/`。理由：`legacy` 暗示「待删的遗留」，本批实为「保留备查的历史证据」，语义相反 — 验收：根目录 `ls *.py` 仅剩 6 个运行必需文件；24 项被 git 识别为重命名，`git log --follow` 可追溯 ✅
+- [x] 处理本地未跟踪文件 — 实测 15 项（原记录 17 项系首次统计口径差异，以实测为准）：`rel_v1.3.4`~`v1.5.1_notes.md`（9 份）与 `作者卡片注入说明.md`、`author_card_template.html` 归入 `archive/`；`_rescue_dl_8545487.py`、`_rewrite_ini_26.py`、`fix_folder_icons.py` 归 `archive/scripts/` — 验收：`git status --porcelain | grep '^??'` 计数为 0 ✅
+- [x] 修正 `.gitignore` 与入库内容的一致性 — 根因定位：旧规则无前导斜杠（如 `preview3.py`）会匹配**任意层级**同名文件。修正为全部加前导 `/`，只约束根目录。4 组同类矛盾（`SCORE_TABLE_*` / `render_preview*` / `test_*` / `rel_v*_notes`）全部消除 — 验收：逐条核对无冲突，归档后文件不再被误忽略 ✅
+- [x] 统一发版记录位置 — **偏离原计划**：原拟 `docs/releases/`，实际分流为 `archive/release-notes/`（14 份发版草稿）与 `archive/score-tables/`（5 份验收评分表），因两者性质不同（文案草稿 vs 验收记录），混放会降低可检索性；README「更新日志」改为指向 `archive/score-tables/` — 验收：根目录无 `rel_v*.md` 与 `SCORE_TABLE_*.md` ✅
+- [x] 修正 README 失效链接（合并原「第 141 行链接指向 R7」一项）— 三处全改：`preview_build/` ×2、更新日志链接、`booth_core.py` 行号链接格式 — 验收：脚本提取 README 12 个相对链接，全部可达 ✅
 
-- [ ] 盘出根目录一次性脚本清单，产出「保留 / 归档 / 删除」建议表交用户确认（前置：P0 push 确认后开工。候选全集已在 `review/2026-09-27-仓库与代码现状审查.md` 的 T2/T3/T4 列出，可直接作为确认底稿）— 验收：清单覆盖 `rg -l '^# *(_|fix_r|test_r|test_qa|render_preview|preview|verify_)' *.py` 全集，逐项标状态与理由
-- [ ] 建 `legacy/oneoff/` 并把已入库的一次性脚本移入（`_forensic_icons.py`、`_normalize_ini_all.py`、`_test_drag_r21.py`、`_test_force_r22.py`、`fix_r9/r10/r12_*.py`、`render_preview_r5/r6.py`、`render_r7plus_mismatch.py`、`test_qa_r5*.py`、`test_r6.py`、`test_r7*.py`、`test_folder_icon_fix.py`、`render_preview.py`、`preview3/4.py`、`preview_render.py`、`verify_*.py`）— 验收：根目录 `ls *.py` 仅剩 `run.py` / `booth_core.py` / `main_window.py` / `theme.py` / `archive_util.py` / `_version.py`
-- [ ] 处理本地 17 项未跟踪文件：`rel_v1.3.4`~`rel_v1.4.1_notes.md` 与 `作者卡片注入说明.md`、`author_card_template.html` 归入 `docs/releases/` 或 `legacy/`；`_rescue_dl_8545487.py`、`_rewrite_ini_26.py`、`fix_folder_icons.py` 归 `legacy/oneoff/` — 验收：`git status --porcelain` 清空（除刻意保留项，须逐项说明）
-- [ ] 修正 `.gitignore` 与入库内容的一致性：同类性质文件不得一半忽略一半入库 — 验收：`rg 'SCORE_TABLE|preview|verify_' .gitignore` 与实际入库结果无冲突（逐条核对）
-- [ ] 统一发版记录位置：`rel_v*.md` / `SCORE_TABLE_*.md` 移入 `docs/releases/`（保留原文件名），README 更新日志改为指向该目录 — 验收：根目录无 `rel_v*.md` 与 `SCORE_TABLE_*.md`；README「更新日志」段落链接可达
-- [ ] 修正 README 第 141 行链接（现指向 R7，最新为 R10）— 验收：链接指向的路径在仓库中真实存在
+## P2 — 门面与可移植性修正 · R17 完成
 
-## P2 — 门面与可移植性修正
+- [x] 拆分 `LICENSE.txt` — **偏离原计划**：中文项目说明与免责声明实际移入 `README.md` 的「协议」章节，未新建 `NOTICE.md`。理由：README 已有「⚠️ 风险提示」「📜 协议」两节，语义集中且访客更易见 — 验收：`LICENSE.txt` 仅含 MIT 正文 ✅；GitHub 端 `spdx_id` 由 `NOASSERTION` 变 `MIT` 需推送后由 GitHub 重新扫描，属外部平台行为，本地不可验证 ⏳
+- [x] 更新 `pages/updater.py` 硬编码用户名为 `LinnnnYue` — 同时处理 `pages/settings_page.py`、`README.md`，共 6 处 — 验收：`rg 'linnnnnnnnnnnnnnnnnnnnn/booth-keeper' --glob '*.py'` 命中 0 ✅
+- [x] 代理策略改为「默认直连、设置页可选启用」（用户 R17 拍板）— 实现：新增 `booth_core.apply_proxy()` 作为唯一真源；`PROXY` 常量去掉 `127.0.0.1:20122` 兜底（仅尊重环境变量 `HTTPS_PROXY`）；`DEFAULT_CONFIG["proxy"]` → `False`；`updater.py` 移除自持硬编码常量；启动与设置页保存时注入 — 验收：实测四项（默认直连 / 启用代理 / 关闭回直连 / 空 URL 直连）全部符合预期 ✅
+- [x] README 修正：改写两处 `preview_build/` 引用；`[booth_core.py:42-77](booth_core.py)` 改为标准 GitHub 行号链接格式 — 验收：README 所有相对链接指向的路径在仓库树中真实存在 ✅
+- [x] 评审 `archive_util.py` 的静默失败点 — 产出 `review/2026-09-27-静默失败点评审.md`：全项目 36 处静默点逐处定性（含所属函数名），处置 7 处，残留 29 处已分三类（保持 18 / 建议加固 8 / 高危 3）— 验收：记录含每处现行行为与建议处置，附脚本化复现方式 ✅
 
-> 前置：P0 全部 `[x]`。**P2-3 会改变默认网络行为，须用户拍板后再执行。**
+## P3 — 遗留项独立立项（未开工）
 
-- [ ] 拆分 `LICENSE.txt`：正文仅保留纯 MIT 文本，中文项目说明与免责声明移入 `NOTICE.md` — 验收：GitHub 仓库页 License 显示为 `MIT`（非 `NOASSERTION`）
-- [ ] 更新 `pages/updater.py:11-12` 硬编码用户名为 `LinnnnYue`（现依赖旧名重定向）— 验收：`rg 'linnnnnnnnnnnnnnnnnnnnn/booth-keeper' --glob '*.py'` 无命中；`python -c "from pages import updater; print(updater.check_update())"` 返回 `has_update` 字段可判定
-- [ ] **待用户拍板**：代理策略改为「默认直连、设置页可选启用代理」（现 `booth_core.py:40` 默认指向 `127.0.0.1:20122`，无代理环境下所有请求先失败重试 3 次）— 验收：无代理环境（`HTTPS_PROXY` 未设）下 `python -c "import booth_core as bc; bc.fetch_item('7032906')"` 3 秒内返回非 None
-- [ ] README 修正：删除或改写两处 `preview_build/` 引用（该目录被 `.gitignore` 忽略，访客不可见）；`[booth_core.py:42-77](booth_core.py)` 改为标准 GitHub 行号链接格式 — 验收：README 中所有相对链接指向的路径在仓库树中真实存在
-- [ ] 评审 `archive_util.py` 的静默失败点（`download_cover` / `make_folder_icon` / `_remove_to_trash` 的 `except: pass`），改为至少记录到 worklog 或 UI 状态 — 验收：产出 `review/` 记录一份，列出每处静默点的现行行为与建议处置
+> 以下各项均**未开工**，须先写需求文档 → 评审 → 再进 plan。R17 仅登记，不启动。
+
+- [ ] `booth_core.py` 单体拆分（1418 行 → 网络层 / 领域映射 / Windows Shell 集成 / 文件名与搜索 四模块）— 验收口径待需求文档确定。出处：原审查 T8
+- [ ] QThread 样板重构（抽共享 Worker 基类，7+ 处重复装配）— 验收口径待需求文档确定。出处：原审查 T9。注：R17 后代理装配已收敛为单一真源，本项剩余价值缩小
+- [ ] `force` 重归档回滚路径加固（`archive_item` 三处高危静默点：L285 / L312 / L349）— 验收口径待需求文档确定；**须先补真机演练用例**（磁盘满 / 文件被占用 / 进程被杀 / 半还原中间态）。出处：静默失败点评审 §4
+- [ ] 后台异常统一上报通道（状态栏或日志面板，替代打包后不可见的 `print`）— 验收口径待需求文档确定。出处：静默失败点评审 §3
 
 <!-- 新阶段在末尾顺延编号追加（P3、P4…）；新需求先走需求文档评审再插入或新起 PX。 -->

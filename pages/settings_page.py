@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from pages.base import BasePage
 from pages.notify import ThemeDialog
 import theme
+import booth_core as bc
 
 
 def asset_path(name: str) -> str:
@@ -154,7 +155,7 @@ class SettingsPage(BasePage):
         info_col.addWidget(afdian_label)
 
         gh_label = QLabel(
-            '<a href="https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper" '
+            '<a href="https://github.com/LinnnnYue/booth-keeper" '
             'style="color: #888;"><b>GitHub · 点 ⭐ 鼓励</b></a>')
         gh_label.setOpenExternalLinks(True)
         gh_label.setTextFormat(Qt.RichText)
@@ -241,21 +242,25 @@ class SettingsPage(BasePage):
             self.edit_root.setText(d)
 
     def _collect(self):
-        """把控件值写回 config（不落盘、不重刷主题）。"""
+        """把控件值写回 config（不落盘、不重刷主题）。
+        副作用：代理改动立即注入全局真源（R17），无需重启即生效。"""
         self.main.config["booth_root"] = self.edit_root.text().strip()
         self.main.config["proxy"] = self.chk_proxy.isChecked()
         self.main.config["proxy_url"] = self.edit_proxy.text().strip()
         self.main.config["cookie"] = self.edit_cookie.text().strip()
         self.main.config["auto_check_update"] = self.chk_auto_update.isChecked()
+        bc.apply_proxy(self.main.config["proxy_url"],
+                       enabled=self.main.config["proxy"])
 
     def _autosave(self):
-        """R16：改动即存。避免用户改完忘点『保存设置』，重开后回到默认值。"""
+        """R16：改动即存。避免用户改完忘点『保存设置』，重开后回到默认值。
+        R17：保存失败必须可见——静默吞掉会让用户以为设置已生效。"""
         try:
             self._collect()
             self.main.save_config()
             self.main.set_status("设置已自动保存")
-        except Exception:
-            pass
+        except Exception as e:
+            self.main.set_status(f"⚠ 设置保存失败：{e}")
 
     def save(self):
         self._collect()
@@ -269,8 +274,7 @@ class SettingsPage(BasePage):
         self.btn_check_update.setText("检查中…")
         try:
             from pages import updater
-            cfg = self.main.config
-            info = updater.check_update(proxy=cfg.get("proxy", False))
+            info = updater.check_update()  # R17：代理走全局真源
             self.btn_check_update.setEnabled(True)
             self.btn_check_update.setText("立即检查更新")
             if info.get("error"):

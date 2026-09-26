@@ -6,29 +6,33 @@ from pathlib import Path
 import booth_core as bc
 
 # R12：迁移后空目录走回收站（避免永久删，可找回）
+# R17：两级清理全失败时留痕——原先静默吞掉，用户会以为空目录已清干净。
 try:
     from send2trash import send2trash as _send2trash
     def _remove_to_trash(p: Path) -> None:
-        """删除路径到回收站（仅当路径存在时）。"""
+        """删除路径到回收站（仅当路径存在时）。回收站失败降级永久删除。"""
         if p.exists():
             try:
                 _send2trash(str(p))
             except Exception:
                 # 兜底：永久删除
                 try:
-                    shutil.rmtree(p) if p.is_dir() else p.unlink()
-                except Exception:
-                    pass
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                    else:
+                        p.unlink()
+                except Exception as e:
+                    print(f"  [warn] 清理失败（回收站与永久删除均失败）：{p} — {e}")
 except ImportError:
     def _remove_to_trash(p: Path) -> None:
-        """未安装 send2trash 时 fallback rmtree/unlink。"""
+        """未安装 send2trash 时 fallback rmtree/unlink（失败留痕）。"""
         try:
             if p.is_dir():
                 shutil.rmtree(p)
             else:
                 p.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [warn] 清理失败（无 send2trash，永久删除也失败）：{p} — {e}")
 
 
 def cleanup_empty_parents(start: Path, root: Path, max_levels: int = 6):
@@ -139,23 +143,32 @@ def consolidate_id(iid: str, root, session) -> dict:
         cleanup_empty_parents(src, root)
 
     # 补全三件套（cover/ico/ini）
+    # R17：与 archive_item() 对齐，上报三件套状态——
+    # 原先此处静默吞掉封面失败，UI 无从提示，用户只能自己发现缺图。
     cover = dest / "cover.jpg"
     imgs = it.get("images") or []
-    if imgs and not cover.exists():
+    cover_ok = cover.exists()
+    if imgs and not cover_ok:
         try:
             bc.download_cover(imgs[0]["original"], str(dest), session)
-        except Exception:
-            pass
+            cover_ok = cover.exists()
+        except Exception as e:
+            print(f"  [warn] {iid} 封面补全异常: {e}")
+            cover_ok = False
+    icon_ok = False
     if cover.exists():
         try:
             bc.make_folder_icon(cover, dest)
-        except Exception:
-            pass
+            icon_ok = True
+        except Exception as e:
+            print(f"  [warn] {iid} 图标生成异常: {e}")
+            icon_ok = False
 
     return {
         "status": "ok", "id": iid, "name": name, "cat": cat,
         "dest": str(dest), "sources": [str(s) for s in sources],
         "merged_files": merged, "dest_in_sources": dest_in_sources,
+        "cover_ok": cover_ok, "icon_ok": icon_ok,
     }
 
 
@@ -231,8 +244,11 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
                         "name": name, "cat": cat, "id": iid, "dest": str(dest),
                         "wrong_path": str(d), "wrong_cat": wrong_cat, "dest_cat": cat,
                     }
-        except OSError:
-            pass
+        except OSError as e:
+            # R17：错位扫描失败 → 记录但不中止（root 个别子目录不可遍历时，
+            # 仍应允许单件归档）。后果是可能漏判错位而在其他类目新建重复目录，
+            # 故必须留痕，不能静默。
+            print(f"  [warn] {iid} 错位扫描未完成（root 不可遍历？）：{e}")
     old_archived = None
     if dest.exists() and force:
         # R22（同位置日期留档）：force 重归档不再「改名备份 + 成功回收旧档」——

@@ -10,6 +10,45 @@
 
 ---
 
+## [v1]-raphael-20260927-0110 R17：主上拍板后逐项处置（P0 收尾 + P1 + P2 全量） — 2026-09-27 01:10 开始
+
+- **执行者**: 拉斐尔（WorkBuddy Agent，机器：DESKTOP-N3O6SC2）
+- **目标**: 主上指令「准了，挨个处理」——批准上一轮提出的三处待拍板项（push / P1 归档 / P2-3 代理策略），并要求逐项处置。执行范围：P0 末项（push）+ P1 全部 + P2 全部。
+- **上下文**: 上一轮已产出 `review/2026-09-27-仓库与代码现状审查.md`（9 项优点 + 12 项待办 T1~T12）。主上批准后，本轮把 T1~T7、T10 全部落地，T8/T9/T11 部分项降级为 P3 登记。
+- **进展**:
+  1. **push**：`58b82b1..0faa030` 推送成功，`git ls-remote` 与本地 HEAD 一致。
+  2. **T1 代理解耦**：`booth_core` 新增 `apply_proxy()` / `proxy_map()` 作为唯一真源；`PROXY` 常量去掉 `127.0.0.1:20122` 硬兜底（保留环境变量 `HTTPS_PROXY` 尊重）；`DEFAULT_CONFIG["proxy"]` → `False`；`main_window.__init__` 启动时注入；设置页 `_collect()` 末尾即时注入（改完无需重启）；`updater.py` 移除自持常量、`fetch_latest_release(proxy=None)` 改为跟随全局。
+  3. **T2/T3/T4 仓库卫生**：51 项根目录产物 `git mv` 至 `archive/{scripts,release-notes,score-tables,design}`（30/14/5/4），建 `archive/README.md` 索引；重写 `.gitignore`（所有散落规则加前导 `/`）；`assets/logo/*.svg` 补入库。
+  4. **T5 LICENSE**：还原纯 MIT 正文，中文说明与免责声明移入 README「协议」章节。
+  5. **T6 用户名**：6 处 `linnnnnnnnnnnnnnnnnnnnn/booth-keeper` → `LinnnnYue/booth-keeper`。
+  6. **T7 README**：三处失效引用全改，实测 12 个相对链接全部可达。
+  7. **T10 静默点**：全项目 36 处逐处定性（AST 自动定位所属函数），处置 7 处，产出 `review/2026-09-27-静默失败点评审.md`。
+  8. 产出 `review/2026-09-27-根目录处置表.md`（P1 首项验收底稿：66 项全集逐项标注）。
+- **验证**（2026-09-27 实测，全部通过）:
+  - 代理四项行为：默认 `''` → `session.proxies={}`；`apply_proxy(url, True)` → 双向代理映射；`enabled=False` → `{}`；空 URL → `{}`（PASS）
+  - `updater._resolve_proxies(None)` 走全局、`(False)` 强制直连（PASS）
+  - `py_compile` 全量通过（`booth_core` / `archive_util` / `main_window` / `theme` / `pages/*.py`）
+  - `QT_QPA_PLATFORM=offscreen` 实例化 → `title= Booth Keeper v1.5.6`，`pages= ['links','drag','search','audit','settings']`（PASS）
+  - 设置页回归：`chk_proxy=True`、URL 随配置、`_autosave()` 后状态栏「设置已自动保存」、全局代理正确注入为 `127.0.0.1:20122/`（PASS）
+  - README 相对链接可达性：12/12 PASS
+  - 旧用户名源码区命中：0
+  - 静默点计数：36 → 29（脚本化口径见评审文档 §5）
+  - 根目录非目录文件：66 → 15；未跟踪：15 → 0
+  - `_remove_to_trash` 冒烟：以 `tempfile.mkdtemp()` 临时目录测试，未触碰 BOOTH 资产库（合规 B-1）
+- **决策与坑**:
+  - **偏离 plan 三处，均已如实标注**：①归档目录由 `legacy/oneoff/` 改为 `archive/scripts/`（后者语义是「保留备查的历史证据」，`legacy` 暗示「待删」，相反）；②发版记录分流为 `archive/release-notes/` 与 `archive/score-tables/`（文案草稿与验收记录性质不同，混放降低可检索性）；③LICENSE 的中文说明移入 README 而非新建 `NOTICE.md`（README 已有风险提示与协议两节，更集中易见）。
+  - **T4 根因**：旧 `.gitignore` 规则无前导斜杠 → 匹配任意层级同名文件 → 既会误伤归档后的脚本，又造成同类文件「一半入库一半被忽略」。改为统一加 `/` 后两个问题同时消除。
+  - **T14 重要认知**：老用户 `~/.boothkeeper.json` 中的 `proxy: true` **优先于**新默认值——这是正确行为（否则等于篡改用户设置）。实测本机配置为 `proxy=True` 且 `127.0.0.1:20122` 端口在线，故主上使用体验与改动前一致；**默认直连只对新用户生效**。若老用户要切直连，需在设置页关闭开关。
+  - **T16 流程教训（自查）**：离屏测试中调用 `sp._autosave()` 会写用户配置文件 `~/.boothkeeper.json`。本次为等值写回（7 键齐全，`cookie` 1037 字符完好，仅 mtime 更新），未造成破坏，但属不必要的写入。**后续 UI 测试应只读验证，或临时重定向 `CONFIG_PATH` 至临时目录**。
+  - **回滚路径不动**：`archive_item` 三处高危静默点（L285/L312/L349）位于 force 重归档的回滚路径，改动需覆盖磁盘满 / 文件占用 / 进程被杀 / 半还原中间态的真机演练。未建演练环境前改动风险高于现状，故只登记 P3，不擅动。
+  - **`download_cover` 定性修正**：上一轮审查表述为「失败静默」不够准确——中间层有 `print`，缺的是「全部通道失败时」的末端留痕。本轮已补齐，并在评审文档中修正描述。
+  - **`consolidate_id` 与 `archive_item` 状态上报不对称**（本轮新发现 T13）：后者返回 `cover_ok`/`icon_ok`，前者不含，导致「补全路径缺图」在 UI 完全不可见。已对齐。
+- **代码状态**: 本轮改动尚未提交（工作区改动：`booth_core.py` / `archive_util.py` / `main_window.py` / `pages/updater.py` / `pages/settings_page.py` / `pages/links_page.py` / `README.md` / `LICENSE.txt` / `.gitignore` / `.gitattributes`；新增 `archive/` 51 项 + `docs/boothkeeper/v1/review/` 2 份；`assets/logo/` 3 项入库）。P0 的 `0faa030` 已 push，本轮提交后需再次 push。合并前请先 `git pull`。
+- **状态**: ✅完成（P0 + P1 + P2 全绿；T8/T9/T11 余项已入 P3 登记）
+- **下一步**: ①提交并推送本轮改动（公开仓库，若主上要求可再确认一次）；②P3 四项（`booth_core` 拆分 / QThread 重构 / 回滚路径加固 / 异常统一上报通道）待主上决定是否立项；③`LICENSE.txt` 的 GitHub `spdx_id` 变化需推送后由 GitHub 重新扫描确认。
+
+---
+
 ## [v1]-raphael-20260927-0050 devskill 规范接入与文档骨架 — 2026-09-27 00:50 开始
 
 - **执行者**: 拉斐尔（WorkBuddy Agent，机器：DESKTOP-N3O6SC2）

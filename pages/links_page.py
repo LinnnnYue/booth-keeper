@@ -159,8 +159,10 @@ class LinksWorker(QThread):
                     (dest / "_manifest.json").write_text(
                         json.dumps(manifest, ensure_ascii=False, indent=2),
                         encoding="utf-8")
-                except Exception:
-                    pass
+                except Exception as e:
+                    # R17：manifest 写失败留痕——它是后续「缺文件」判定的依据，
+                    # 静默吞掉会导致下次核对时凭空多出「缺失」项。
+                    print(f"  [warn] {iid} _manifest.json 写入失败：{e}")
                 self.item_done.emit({
                     "id": iid, "name": name, "cat": cat,
                     "status": status, "dup": dup,

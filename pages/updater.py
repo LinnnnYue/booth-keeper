@@ -8,11 +8,28 @@ import webbrowser
 from pathlib import Path
 import requests
 
-GITHUB_API = "https://api.github.com/repos/linnnnnnnnnnnnnnnnnnnnn/booth-keeper/releases/latest"
-GITHUB_RELEASES = "https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper/releases"
-PROXY = "http://127.0.0.1:20122/"
+GITHUB_API = "https://api.github.com/repos/LinnnnYue/booth-keeper/releases/latest"
+GITHUB_RELEASES = "https://github.com/LinnnnYue/booth-keeper/releases"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"}
+
+
+def _resolve_proxies(proxy: bool | None) -> dict | None:
+    """解析本次请求的代理（R17）。
+
+    None  → 跟随全局真源 booth_core.PROXY（由设置页/启动流程注入）
+    True  → 同上（显式要求走代理，此时无代理可用则退化为直连）
+    False → 强制直连，忽略全局设定
+
+    原实现把 127.0.0.1:20122 硬编码在本模块，与设置页真源重复；
+    现统一委托 booth_core.proxy_map()。"""
+    if proxy is False:
+        return None
+    try:
+        from booth_core import proxy_map
+        return proxy_map()
+    except Exception:
+        return None
 
 
 def _parse_version(ver: str) -> tuple:
@@ -82,11 +99,12 @@ def _fetch_api_release(proxies) -> dict | None:
     return None
 
 
-def fetch_latest_release(proxy: bool = False) -> dict | None:
+def fetch_latest_release(proxy: bool | None = None) -> dict | None:
     """拉最新 release 信息。返回 dict 含 tag_name / html_url / assets。
     通道：HTML 重定向法（主）→ API（兜底）；代理失败自动直连。
+    proxy=None 跟随全局代理真源，False 强制直连（R17）。
     全部失败返回 None（不抛异常）。"""
-    proxies = {"http": PROXY, "https": PROXY} if proxy else None
+    proxies = _resolve_proxies(proxy)
 
     # 通道 1：HTML 重定向法（无配额）
     tag = _fetch_html_tag(proxies)
@@ -117,8 +135,8 @@ def fetch_latest_release(proxy: bool = False) -> dict | None:
     return None
 
 
-def check_update(proxy: bool = False) -> dict:
-    """检查更新主函数。返回 dict：
+def check_update(proxy: bool | None = None) -> dict:
+    """检查更新主函数。proxy=None 跟随全局代理真源（R17）。返回 dict：
       {
         'has_update': bool,
         'local': '1.3.1',

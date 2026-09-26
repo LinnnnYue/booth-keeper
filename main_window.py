@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QPainter, QColor, QPalette, QPixmap, QBrush, QIcon
 from PySide6.QtSvg import QSvgRenderer
 import theme
+import booth_core as bc
 from pages.links_page import LinksPage
 from pages.dragdrop_page import DragDropPage
 from pages.search_page import SearchPage
@@ -28,7 +29,7 @@ except Exception:
 DEFAULT_CONFIG = {
     "theme": theme.DEFAULT_THEME,
     "booth_root": r"G:\Lin_File\BOOTH",
-    "proxy": True,
+    "proxy": False,  # R17：默认直连（原 True 会让无代理环境首启即全部请求超时）
     "proxy_url": "http://127.0.0.1:20122/",
     "auto_check_update": True,  # R10：启动时自动检查更新
     "cookie": "",
@@ -106,6 +107,9 @@ class BoothKeeper(QMainWindow):
         self.setWindowTitle(f"Booth Keeper v{__version__}")
         self.resize(1080, 700)
         self.config = self.load_config()
+        # R17：把配置里的代理设定注入全局真源，之后所有 make_session() 按此走
+        bc.apply_proxy(self.config.get("proxy_url", ""),
+                       enabled=bool(self.config.get("proxy")))
         self.pages = {}
         self.build_ui()
         self.apply_theme()
@@ -118,7 +122,7 @@ class BoothKeeper(QMainWindow):
         """启动时自动检查更新。检测到新版弹主题化主题对话框。"""
         try:
             from pages import updater
-            info = updater.check_update(proxy=self.config.get("proxy", False))
+            info = updater.check_update()  # R17：代理走全局真源，不再逐处传参
             if info.get("error"):
                 return  # 静默失败，不打扰用户
             if info["has_update"]:

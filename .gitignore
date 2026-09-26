@@ -1,43 +1,57 @@
-# Python
+# BoothKeeper .gitignore
+# ── 约定（R17 统一策略）────────────────────────────────────────────
+# 仓库根目录**只放运行必需 / 打包必需 / 入口文档**。任何一次性过程产物
+# （修复脚本、预览渲染、离屏测试、评分表、发版草稿）都必须放入 archive/。
+#
+# 历史产物已统一归档至 archive/（索引见 archive/README.md）。
+# 下面「根目录禁止散落」段的规则一律以 / 开头，只约束仓库根目录——
+# 教训：旧规则写作 `preview3.py`（无前导斜杠）会匹配任意层级的同名文件，
+#   既让 archive/ 下的归档脚本被误忽略，也让同类文件出现「一半入库、
+#   一半被忽略」的自相矛盾（如 SCORE_TABLE_R7 入库、R4/R5/R6 被忽略）。
+
+# ── Python ────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 
-# PyInstaller 构建产物（二进制走 GitHub Release，不进 git）
-build/
-dist/
-*.spec.bak
+# ── PyInstaller 构建产物（二进制走 GitHub Release，不进 git）──────
+/build/
+/dist/
+/*.spec.bak
 
-# 备份/垃圾（同盘保留旧 exe 的地方）
-build_artifacts_trash/
-debug_out.txt
+# ── 根目录禁止散落：一次性过程产物 ───────────────────────────────
+# （归档后的文件位于 archive/ 下，不受这些以 / 开头的规则影响）
+/preview*/
+/render_preview*.py
+/render_r*.py
+/verify_*.py
+/test_*.py
+/_test_*.py
+/fix_*.py
+/_fix_*.py
+/_forensic_*.py
+/_normalize_*.py
+/_rescue_*.py
+/_rewrite_*.py
+/theme_v1_backup.py
+/design_brief.md
+/SCORE_TABLE_*.md
+/rel_v*_notes.md
+/author_card_template.html
+/作者卡片注入说明.md
 
-# 中间产物 / 早期脚本（不入库）
-preview/
-preview2/
-preview_build/
-preview3.py
-preview4.py
-preview_render.py
-render_preview.py
-design_brief.md
-theme_v1_backup.py
-verify_kintsugi.py
-verify_offscreen.py
-verify_theme2.py
-test_offscreen_full.py
-SCORE_TABLE_R4.md
-SCORE_TABLE_R5.md
-SCORE_TABLE_R6.md
+# ── 本地垃圾 ──────────────────────────────────────────────────────
+/build_artifacts_trash/
+/debug_out.txt
 
-# IDE / 系统
+# ── IDE / 系统 ────────────────────────────────────────────────────
 .vscode/
 .idea/
 Thumbs.db
 Desktop.ini
 .DS_Store
 
-# 用户配置（绝不入库）
+# ── 用户配置（绝不入库）───────────────────────────────────────────
 .boothkeeper.json

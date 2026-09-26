@@ -37,7 +37,10 @@ ITEM_JSON  = f"{BOOTH_BASE}/items/{{id}}.json"
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
       "Accept-Language": "ja,en;q=0.9,zh-CN;q=0.8"}
-PROXY = os.environ.get("HTTPS_PROXY", "http://127.0.0.1:20122/")
+# 代理真源（R17）：默认直连。原实现以 127.0.0.1:20122 兜底，
+# 导致无代理环境下每个请求先失败重试 3 次；且与设置页开关脱节。
+# 现仅尊重环境变量 HTTPS_PROXY，用户启用代理时由 apply_proxy() 注入。
+PROXY = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or "").strip()
 MAX_RETRIES = 3
 INVALID = r'<>:"/\\|?*'
 
@@ -127,6 +130,20 @@ def classify(cat_name: str, cat_parent: str = "") -> str:
 
 
 # ── 请求会话 ──────────────────────────────────────────────────────
+def apply_proxy(url: str = "", enabled: bool = True) -> None:
+    """全局设定代理。enabled 为假或 url 为空 → 直连。
+
+    由 main_window 启动流程与设置页保存时调用；make_session() 随即生效。
+    这是全项目唯一的代理真源——worker 内部不再各自拼装代理。"""
+    global PROXY
+    PROXY = url.strip() if (enabled and (url or "").strip()) else ""
+
+
+def proxy_map() -> dict | None:
+    """当前代理的 requests 映射；直连时返回 None。"""
+    return {"http": PROXY, "https": PROXY} if PROXY else None
+
+
 def make_session(cookie: str = "", ua: str = "") -> requests.Session:
     s = requests.Session()
     h = dict(UA)
@@ -758,7 +775,7 @@ def download_cover(thumb_url: str, dest_dir: Path | str | None = None,
         if _fetch(s, retries):
             return cover
     except Exception as e:
-        print(f"  封面下载失败(代理): {e}")
+        print(f"  [warn] 封面下载失败: {e}")
 
     # ② 降级：临时摘掉代理直连再试一次
     saved = dict(s.proxies)
@@ -772,6 +789,10 @@ def download_cover(thumb_url: str, dest_dir: Path | str | None = None,
             print(f"  封面直连兜底也失败: {e}")
         finally:
             s.proxies.update(saved)
+    # ③ 全部通道失败：留痕（R17 补齐）——原实现此行静默返回 None，
+    # 打包后无控制台，排障时无从区分「CDN 挂了」与「图片 URL 失效」。
+    # 注意：封面缺失不阻断归档，调用方据返回值决定是否提示。
+    print(f"  [warn] 封面获取失败（全部通道）：{url}")
     return None
 
 

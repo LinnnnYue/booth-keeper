@@ -22,7 +22,7 @@ PySide6 · Python 3.13 · 单 exe / 安装包 / zip 解压即用 · 无任何云
 | :---: |
 | ![](assets/screenshots/dialog_guwen_dark.png) |
 
-> 离屏渲染图见 `preview_build/` 目录（含三主题 × 明暗整窗、隔离控件、母题底纹等共 60+ 张）。
+> 完整 60+ 张离屏渲染图（三主题 × 明暗整窗、隔离控件、母题底纹）由 `archive/scripts/render_preview*.py` 本地生成到 `preview_build/`，**不入库**（已在 `.gitignore` 中忽略）。
 
 ---
 
@@ -64,7 +64,7 @@ PySide6 · Python 3.13 · 单 exe / 安装包 / zip 解压即用 · 无任何云
 | **zip 解压即用** `BoothKeeper_vX.X.X_portable.zip` | 不写注册表、绿色便携、想拷 U 盘用 | ~85 MB |
 | **单 exe 懒人包** `BoothKeeper.exe` | 想拖到哪就双击（开发调试用） | ~75 MB |
 
-1. 去 [Releases](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper/releases) 下载最新版本
+1. 去 [Releases](https://github.com/LinnnnYue/booth-keeper/releases) 下载最新版本
 2. **安装包**用户：双击 .exe → 一路 Next → 桌面/开始菜单出现图标
 3. **zip**用户：解压到任意目录 → 进 `BoothKeeper/BoothKeeper.exe` 双击
 4. **单 exe**用户：双击即可
@@ -103,7 +103,7 @@ PySide6 · Python 3.13 · 单 exe / 安装包 / zip 解压即用 · 无任何云
 | :---: | :---: |
 | ![](assets/screenshots/r6_dlg_zhuyin_dark.png) | ![](assets/screenshots/r7plus_mismatch_zhuyin_light.png) |
 
-> 完整 60+ 张主题图见项目内 `preview_build/` 目录（本地构建时生成，未入库）。
+> 完整 60+ 张主题图需本地生成：`archive/scripts/render_preview*.py` 输出到 `preview_build/`（未入库，见 `.gitignore`）。
 
 ---
 
@@ -138,7 +138,7 @@ A: 已修复（R6），所有弹窗走自建 `ThemeDialog` 跟主题。
 
 ## 🗓️ 更新日志
 
-> 完整日志见 [`SCORE_TABLE_*.md`](SCORE_TABLE_R7.md)
+> 完整历程见 [`archive/score-tables/`](archive/score-tables/)（R4 ~ R10 各轮验收评分表：诉求 → 根因 → 修复 → 核验口径）
 
 - **R8（2026-08-14）** 巡检错位纠正：扫描同步联网比对，一键重归档
 - **R7+1** 父级 3D 前缀规则（`衣装 + 3D_MODEL → 3D服饰` 等子分类映射根因）
@@ -162,7 +162,16 @@ A: 已修复（R6），所有弹窗走自建 `ThemeDialog` 跟主题。
 
 ## 📜 协议
 
-MIT License — 你可以自由使用、修改、分发，但请保留原作者信息。
+[MIT License](LICENSE.txt) — 你可以自由使用、修改、分发，但请保留原作者信息。
+
+### 免责声明
+
+本软件按「现状」提供，不对使用本软件造成的任何数据丢失、账号封禁、违反第三方服务条款等后果负责。用户应自行评估使用风险并保留原始数据备份。
+
+使用 BOOTH 数据时，请遵守 BOOTH 平台（booth.pm）的服务条款及版权规则。本工具仅作为本地文件管理辅助，不直接托管或分发 BOOTH 内容。
+
+> 说明：以上免责声明原写在 `LICENSE.txt` 尾部，会使 GitHub 无法把该文件识别为标准 MIT（显示 `NOASSERTION`）。现已移至此处，`LICENSE.txt` 只保留 MIT 正文。
+
 
 ---
 
@@ -171,8 +180,8 @@ MIT License — 你可以自由使用、修改、分发，但请保留原作者�
 如果这个工具帮到了你，欢迎支持主上继续维护：
 
 ### 🌟 精神支持（首选！）
-- [GitHub Stars](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper) — 是主上继续迭代的最大动力 ✨
-- [反馈 Issue](https://github.com/linnnnnnnnnnnnnnnnnnnnn/booth-keeper/issues) — bug / 建议 / 类目映射补充都欢迎
+- [GitHub Stars](https://github.com/LinnnnYue/booth-keeper) — 是主上继续迭代的最大动力 ✨
+- [反馈 Issue](https://github.com/LinnnnYue/booth-keeper/issues) — bug / 建议 / 类目映射补充都欢迎
 
 ### ☕ 物质支持（不强求，看心情）
 
@@ -191,7 +200,7 @@ MIT License — 你可以自由使用、修改、分发，但请保留原作者�
 ## 🤝 贡献
 
 欢迎 Issue / PR，特别是：
-- BOOTH 类目映射补充（[booth_core.py:42-77](booth_core.py)）
+- BOOTH 类目映射补充（[`booth_core.py` 的 `CATEGORY_MAP`](booth_core.py#L48-L97)）
 - 主题母题 SVG 替换（[theme.py:208+](theme.py)）
 - 新功能 / 新主题 / 新交互
 

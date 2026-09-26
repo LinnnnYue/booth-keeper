@@ -1,3 +1,13 @@
 # 规范文件保持 LF，确保「逐字拷贝」语义不被 CRLF 转换破坏
 devskill/** text eol=lf
 docs/** text eol=lf
+
+# 归档区是「只搬运不改写」的历史证据，固定 LF 保证字节可复现
+archive/** text eol=lf
+
+# 二进制资源不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.svg text eol=lf
