@@ -4,6 +4,7 @@ import datetime
 import shutil
 from pathlib import Path
 import booth_core as bc
+import diag
 
 # R12：迁移后空目录走回收站（避免永久删，可找回）
 # R17：两级清理全失败时留痕——原先静默吞掉，用户会以为空目录已清干净。
@@ -22,7 +23,8 @@ try:
                     else:
                         p.unlink()
                 except Exception as e:
-                    print(f"  [warn] 清理失败（回收站与永久删除均失败）：{p} — {e}")
+                    diag.warn(f"清理失败（回收站与永久删除均失败）：{e}",
+                              scope="remove_to_trash", path=str(p))
 except ImportError:
     def _remove_to_trash(p: Path) -> None:
         """未安装 send2trash 时 fallback rmtree/unlink（失败留痕）。"""
@@ -32,7 +34,8 @@ except ImportError:
             else:
                 p.unlink()
         except Exception as e:
-            print(f"  [warn] 清理失败（无 send2trash，永久删除也失败）：{p} — {e}")
+            diag.warn(f"清理失败（无 send2trash，永久删除也失败）：{e}",
+                      scope="remove_to_trash", path=str(p))
 
 
 def cleanup_empty_parents(start: Path, root: Path, max_levels: int = 6):
@@ -153,7 +156,7 @@ def consolidate_id(iid: str, root, session) -> dict:
             bc.download_cover(imgs[0]["original"], str(dest), session)
             cover_ok = cover.exists()
         except Exception as e:
-            print(f"  [warn] {iid} 封面补全异常: {e}")
+            diag.warn(f"封面补全异常：{e}", scope="consolidate_id", iid=iid)
             cover_ok = False
     icon_ok = False
     if cover.exists():
@@ -161,7 +164,7 @@ def consolidate_id(iid: str, root, session) -> dict:
             bc.make_folder_icon(cover, dest)
             icon_ok = True
         except Exception as e:
-            print(f"  [warn] {iid} 图标生成异常: {e}")
+            diag.warn(f"图标生成异常：{e}", scope="consolidate_id", iid=iid)
             icon_ok = False
 
     return {
@@ -170,6 +173,58 @@ def consolidate_id(iid: str, root, session) -> dict:
         "merged_files": merged, "dest_in_sources": dest_in_sources,
         "cover_ok": cover_ok, "icon_ok": icon_ok,
     }
+
+
+# ── R23：留档还原（force 重归档回滚路径）────────────────────────────
+# 三处调用点原先各写一份「还原已留档内容」，失败一律静默 pass —— 结果是返回消息
+# 写死「已还原」，而磁盘上可能只还原了一半（R17 判为高危：不是没提示，是给了
+# 与事实不符的成功承诺）。现收敛为唯一实现，并让调用方拿到真实结果生成消息。
+# 演练用例见 tests/test_rollback.py。
+_LEGACY_PREFIX = "旧版本_"
+
+
+def _is_legacy_dir(p: Path) -> bool:
+    """是否为 R22 同位置日期留档产物（「旧版本_<时间戳>」目录）。"""
+    return p.is_dir() and p.name.startswith(_LEGACY_PREFIX)
+
+
+def _restore_from_archive(old_dir: Path, dest: Path, iid: str = "") -> tuple[int, list[str]]:
+    """把留档目录内的项还原回 dest 根。
+
+    返回 (已还原数, 未能还原的项名列表)。
+    重名项不覆盖目标，保留在留档目录内并一并计入「未还原」——对调用方而言
+    「没有回到 dest 根」就是未还原，如实计数比分类更重要。
+    仅在全部还原成功时移除空壳目录；有残留则保留（内容安全优先于整洁）。
+    """
+    if old_dir is None or not old_dir.exists():
+        return 0, []
+    restored, failed = 0, []
+    for child in sorted(old_dir.iterdir(), key=lambda p: p.name):
+        target = dest / child.name
+        if target.exists():
+            failed.append(child.name)
+            continue
+        try:
+            shutil.move(str(child), str(target))
+            restored += 1
+        except Exception as e:
+            failed.append(child.name)
+            diag.warn(f"还原留档项失败：{child.name} ({e})",
+                      scope="restore_archive", iid=iid, path=str(child))
+    if not failed:
+        try:
+            old_dir.rmdir()
+        except OSError:
+            pass
+    return restored, failed
+
+
+def _describe_restore(restored: int, failed: list, old_dir: Path) -> str:
+    """把还原结果转成如实描述 —— 消息必须与磁盘真实状态一致（R23）。"""
+    if not failed:
+        return "留档内容已还原"
+    shown = "、".join(str(x) for x in failed[:3]) + ("…" if len(failed) > 3 else "")
+    return f"仅还原 {restored} 项，{len(failed)} 项仍在 {old_dir.name}/（{shown}）"
 
 
 def archive_item(iid: str, root, session, move_source: str = None, force: bool = False) -> dict:
@@ -247,8 +302,9 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
         except OSError as e:
             # R17：错位扫描失败 → 记录但不中止（root 个别子目录不可遍历时，
             # 仍应允许单件归档）。后果是可能漏判错位而在其他类目新建重复目录，
-            # 故必须留痕，不能静默。
-            print(f"  [warn] {iid} 错位扫描未完成（root 不可遍历？）：{e}")
+            # 故必须留痕，不能静默。R23：接入诊断通道（原先只 print，打包后不可见）。
+            diag.warn(f"错位扫描未完成（root 不可遍历？）：{e}",
+                      scope="archive_item", iid=iid)
     old_archived = None
     if dest.exists() and force:
         # R22（同位置日期留档）：force 重归档不再「改名备份 + 成功回收旧档」——
@@ -259,9 +315,13 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
                         Path(move_source).resolve() == dest.resolve())
         if not same_pos:
             # dest 有旧内容 → 移入「旧版本_日期_时间」子目录留档（一件不丢）
+            rollback_note = "未产生需还原的留档"
             try:
-                # 先枚举 dest 现有子项（避免把稍后新建的留档目录自己也搬进去）
-                children = [c for c in dest.iterdir()]
+                # 先枚举 dest 现有子项（避免把稍后新建的留档目录自己也搬进去）。
+                # R23：跳过既有的「旧版本_*」—— 它们本就是留档产物，再被留档会形成
+                # 旧版本_新/旧版本_旧/ 套娃。真机触发场景：上次 force 在「留档完成、
+                # 新内容未落」时被中断（见 tests/test_rollback.py 演练四）。
+                children = [c for c in dest.iterdir() if not _is_legacy_dir(c)]
                 if children:
                     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
                     old_dir = dest / f"旧版本_{stamp}"
@@ -270,25 +330,24 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
                         old_dir = dest / f"旧版本_{stamp}_{n}"
                         n += 1
                     old_dir.mkdir()
-                    moved = []
                     try:
                         for child in children:
                             shutil.move(str(child), str(old_dir / child.name))
-                            moved.append(child.name)
                     except Exception:
                         # 留档中途失败 → 回滚已移入项，dest 尽量保持原状
-                        for nm in moved:
-                            try:
-                                if not (dest / nm).exists():
-                                    shutil.move(str(old_dir / nm), str(dest / nm))
-                            except Exception:
-                                pass
+                        restored, failed = _restore_from_archive(old_dir, dest, iid)
+                        rollback_note = _describe_restore(restored, failed, old_dir)
+                        if failed:
+                            diag.error(
+                                f"留档中途失败，且回滚不完整：{len(failed)} 项仍留在留档目录",
+                                scope="archive_item", iid=iid, failed=",".join(failed))
                         raise
                     old_archived = old_dir
             except Exception as e:
-                # 留档失败 → dest 尽量还原，报错不归档
+                # 留档失败 → dest 尽量还原，报错不归档。消息按实际回滚结果生成，
+                # 不再笼统写「目录已尽量还原」（R23）。
                 return {"status": "err",
-                        "msg": f"旧内容留档失败:{e}（目录已尽量还原）", "id": iid}
+                        "msg": f"旧内容留档失败:{e}（{rollback_note}）", "id": iid}
         # same_pos（源即目标目录）：无新内容可入根，仅刷新三件套，不做任何删除
     else:
         same_pos = False
@@ -302,15 +361,15 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
         # R22：force 归档源必须存在，否则归档必成空目录——
         # 若已发生旧内容留档则先还原留档，再报错（绝不「留档后失败」）。
         if not src.exists():
-            if old_archived is not None and old_archived.exists():
-                try:
-                    for child in list(old_archived.iterdir()):
-                        if not (dest / child.name).exists():
-                            shutil.move(str(child), str(dest / child.name))
-                    old_archived.rmdir()   # 全还原则移除空壳；有重名则保留
-                except Exception:
-                    pass
-            return {"status": "err", "msg": "源文件不存在（已还原留档内容，未重归档）",
+            # R23：还原结果如实入消息 —— 原实现无论成败都写「已还原留档内容」，
+            # 还原失败时即对用户撒谎（详见 tests/test_rollback.py 演练五）。
+            restored, failed = _restore_from_archive(old_archived, dest, iid)
+            note = (_describe_restore(restored, failed, old_archived)
+                    if old_archived else "无留档内容需还原")
+            if failed:
+                diag.error(f"源不存在，且留档还原不完整：{len(failed)} 项仍在留档目录",
+                           scope="archive_item", iid=iid, failed=",".join(failed))
+            return {"status": "err", "msg": f"源文件不存在（{note}，未重归档）",
                     "id": iid, "name": name, "cat": cat}
         if src.exists():
             try:
@@ -339,15 +398,15 @@ def archive_item(iid: str, root, session, move_source: str = None, force: bool =
                     shutil.move(str(src), str(dest / src.name))
             except Exception as e:
                 # R22：移动失败 → 还原已留档的旧内容，商品一件不丢
-                if old_archived is not None and old_archived.exists():
-                    try:
-                        for child in list(old_archived.iterdir()):
-                            if not (dest / child.name).exists():
-                                shutil.move(str(child), str(dest / child.name))
-                        old_archived.rmdir()
-                    except Exception:
-                        pass
-                return {"status": "err", "msg": f"移动失败:{e}（留档内容已还原）", "id": iid}
+                # R23：还原结果如实入消息（原写死「留档内容已还原」，还原不完整时
+                # 用户读到的是一句与磁盘状态不符的承诺 —— 演练三即此场景）。
+                restored, failed = _restore_from_archive(old_archived, dest, iid)
+                note = (_describe_restore(restored, failed, old_archived)
+                        if old_archived else "无留档内容需还原")
+                if failed:
+                    diag.error(f"移动失败，且留档还原不完整：{len(failed)} 项仍在留档目录",
+                               scope="archive_item", iid=iid, failed=",".join(failed))
+                return {"status": "err", "msg": f"移动失败:{e}（{note}）", "id": iid}
 
     cover = dest / "cover.jpg"
     imgs = it.get("images") or []

@@ -4,10 +4,11 @@ from pathlib import Path
 from urllib.parse import unquote
 from PySide6.QtWidgets import (QPlainTextEdit, QPushButton, QListWidget, QListWidgetItem,
     QHBoxLayout, QLabel, QProgressBar, QFrame)
-from PySide6.QtCore import Qt, QThread, Signal, QUrl
+from PySide6.QtCore import Qt, Signal, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from pages.base import BasePage
 from pages.notify import ThemeDialog
+from pages.workers import BoothTask
 import booth_core as bc
 from archive_util import archive_item, find_existing_source_in_library
 
@@ -87,23 +88,17 @@ def _extract_basename(s: str) -> str:
     return name.strip()
 
 
-class SearchWorker(QThread):
+class SearchWorker(BoothTask):
     """R6 多候选：接受候选查询列表，按顺序逐一搜索，合并去重（保留首次出现的顺序）。
     返回值: [{id, name, price_text, shop, ...}, ...]"""
     result = Signal(list, int)  # (items, candidates_used)
     error = Signal(str)
 
-    def __init__(self, queries, proxy, proxy_url, cookie):
-        super().__init__()
+    def __init__(self, queries, cookie=""):
+        super().__init__(cookie)
         self.queries = queries if isinstance(queries, list) else [queries]
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         seen = set()
         merged = []
         used = 0
@@ -123,23 +118,17 @@ class SearchWorker(QThread):
             self.error.emit(str(e))
 
 
-class ArchiveWorker(QThread):
+class ArchiveWorker(BoothTask):
     item_done = Signal(dict)
     finished = Signal()
 
-    def __init__(self, ids, root, proxy, proxy_url, cookie):
-        super().__init__()
+    def __init__(self, ids, root, cookie=""):
+        super().__init__(cookie)
         self.ids = ids
         self.root = root
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
         self.moves = {}  # R7：id → BOOTH 库内源路径（由 SearchPage.archive 注入）
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         for iid in self.ids:
             src = self.moves.get(iid)
             try:
@@ -258,7 +247,7 @@ class SearchPage(BasePage):
         self.list.clear()
         self.lbl.setText(f"检索中…（{len(queries)} 个候选：{queries[:3]}{'...' if len(queries) > 3 else ''}）")
         self.btn_archive.setEnabled(False)
-        self.worker = SearchWorker(queries, cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+        self.worker = SearchWorker(queries, cfg["cookie"])
         self.worker.result.connect(self.on_result)
         self.worker.error.connect(lambda e: self.lbl.setText("错误: " + e))
         self.worker.start()
@@ -342,7 +331,7 @@ class SearchPage(BasePage):
 
         self._done = []
         self.bar.setValue(0)
-        self.archiver = ArchiveWorker(archive_ids, cfg["booth_root"], cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+        self.archiver = ArchiveWorker(archive_ids, cfg["booth_root"], cfg["cookie"])
         self.archiver.moves = moves
         self.archiver.item_done.connect(self.on_archive_done)
         self.archiver.finished.connect(self.on_finished)
@@ -361,10 +350,9 @@ class SearchPage(BasePage):
             msg = r.get("msg", "")
             if "未找到商品" in msg:
                 cfg = self.main.config
+                # R23：代理走 booth_core 全局真源（apply_proxy），不再逐处手工装配 ——
+                # 手工 update 会在 proxy_url 为空时把全局映射覆盖成空值。
                 sess = bc.make_session(cfg.get("cookie", ""))
-                if cfg.get("proxy"):
-                    sess.proxies.update({"http": cfg["proxy_url"],
-                                         "https": cfg["proxy_url"]})
                 state, why = bc.classify_item_state(str(r.get("id", "")), sess)
                 if state == "delisted":
                     self.lbl.setText(

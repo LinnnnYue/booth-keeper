@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget, QLabel, QPushButton, QStatusBar, QApplication)
-from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtCore import Qt, QSize, QTimer, QObject, Signal
 from PySide6.QtGui import QPainter, QColor, QPalette, QPixmap, QBrush, QIcon
 from PySide6.QtSvg import QSvgRenderer
 import theme
+import diag
 import booth_core as bc
 from pages.links_page import LinksPage
 from pages.dragdrop_page import DragDropPage
@@ -15,6 +16,17 @@ from pages.search_page import SearchPage
 from pages.audit_page import AuditPage
 from pages.settings_page import SettingsPage
 from pages.notify import ThemeDialog
+from pages.diag_panel import DiagPanel
+
+
+class _DiagBridge(QObject):
+    """diag 通道与 GUI 线程之间的桥。
+
+    逻辑层（booth_core / archive_util）运行在 QThread 内，其 report() 调用发生在
+    Worker 线程；本类只做一件事——把记录经 Signal 投递到主线程。
+    Qt 的 signal/slot 跨线程自动走 QueuedConnection，因此不直接触碰控件。
+    """
+    record = Signal(dict)
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -106,11 +118,19 @@ class BoothKeeper(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"Booth Keeper v{__version__}")
         self.resize(1080, 700)
+        # R23：接通诊断通道 —— 逻辑层（含 QThread 内 Worker）的告警从此刻起有出口，
+        # 不再是打包后不可见的 print。sink 只做 Signal 转发，实际处理在主线程槽内。
+        # 注意本段必须在 load_config() 之前：配置损坏的告警要能被 GUI 收到。
+        self._diag_panel = None
+        self._diag_alerts = 0
+        self._diag_bridge = _DiagBridge()
+        self._diag_bridge.record.connect(self._on_diag_record)
+        diag.set_sink(self._diag_bridge.record.emit)
+        self.pages = {}
         self.config = self.load_config()
         # R17：把配置里的代理设定注入全局真源，之后所有 make_session() 按此走
         bc.apply_proxy(self.config.get("proxy_url", ""),
                        enabled=bool(self.config.get("proxy")))
-        self.pages = {}
         self.build_ui()
         self.apply_theme()
         self.switch_page("links")
@@ -148,8 +168,11 @@ class BoothKeeper(QMainWindow):
         try:
             if CONFIG_PATH.exists():
                 cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+        except Exception as e:
+            # R23：配置损坏是重要事件 —— 用户会表现为「设置莫名回到默认值」，
+            # 无任何线索。原先静默吞掉，现经诊断通道留痕（不含配置内容，仅路径与原因）。
+            diag.warn(f"配置文件读取失败，已回退默认值：{e}",
+                      scope="load_config", path=str(CONFIG_PATH))
         cfg.setdefault("theme", theme.DEFAULT_THEME)
         # 防御：清理旧「七色 accent」版本残留字段；mode 非法则回退 light
         cfg.pop("accent", None)  # 旧版 accent 名（teal 等）已废弃
@@ -234,7 +257,58 @@ class BoothKeeper(QMainWindow):
         h.addWidget(self.stack, 1)
 
         self.setStatusBar(QStatusBar())
+        # R23：诊断入口。无异常时显示「诊断」，有告警时带计数——按钮本身即是提示。
+        self.diag_btn = QPushButton("诊断")
+        self.diag_btn.setObjectName("ghost")
+        self.diag_btn.setFixedHeight(22)
+        self.diag_btn.setCursor(Qt.PointingHandCursor)
+        self.diag_btn.clicked.connect(self.show_diag_panel)
+        self.statusBar().addPermanentWidget(self.diag_btn)
         self.set_status("就绪")
+
+    # ---- 诊断通道（R23）----
+    def _on_diag_record(self, rec: dict):
+        """诊断记录的主线程处理：状态栏摘要 + 面板实时追加。
+
+        本槽由 Signal 投递触发，始终运行在 GUI 线程，可安全触碰控件。
+        注意：UI 构建完成前也可能有记录到达（典型：load_config 阶段配置损坏），
+        此时只累加计数——记录本身已进 diag 环形缓冲，面板打开时仍可回溯。
+        """
+        if rec["level"] in ("warn", "error"):
+            self._diag_alerts += 1
+            if getattr(self, "diag_btn", None) is not None:
+                scope = f"{rec['scope']}: " if rec.get("scope") else ""
+                mark = "⚠ " if rec["level"] == "warn" else "✕ "
+                self.set_status(mark + scope + rec["msg"])
+                self._sync_diag_btn()
+        panel = self._diag_panel
+        if panel is not None and panel.isVisible():
+            panel.append(rec)
+
+    def _sync_diag_btn(self):
+        self.diag_btn.setText("诊断" if not self._diag_alerts
+                              else f"诊断 · {self._diag_alerts}")
+
+    def show_diag_panel(self):
+        if self._diag_panel is None:
+            self._diag_panel = DiagPanel(self, self.config["theme"], self._current_mode())
+            self._diag_panel.cleared.connect(self._on_diag_cleared)
+        else:
+            self._diag_panel.reload()
+        # 打开面板 = 用户已查看，未读计数归零（缓冲仍保留，可回溯）
+        self._diag_alerts = 0
+        self._sync_diag_btn()
+        self._diag_panel.show()
+        self._diag_panel.raise_()
+        self._diag_panel.activateWindow()
+
+    def _on_diag_cleared(self):
+        self._diag_alerts = 0
+        self._sync_diag_btn()
+
+    def _current_mode(self) -> str:
+        tn = self.config["theme"]
+        return self.config.get("mode") or theme.DEFAULT_MODE_PER_THEME[tn]
 
     def switch_page(self, key):
         if key in self.pages:
@@ -319,6 +393,9 @@ class BoothKeeper(QMainWindow):
         self.mode_btn.setText(("　明" if mode == "light" else "　暗"))
         # 品牌印章随主题刷新
         self._seal_label(pal["accent"])
+        # 诊断面板（若已创建）跟随主题重着色
+        if self._diag_panel is not None:
+            self._diag_panel.refresh_theme(tn, mode)
 
     def set_status(self, msg):
         self.statusBar().showMessage(msg)

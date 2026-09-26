@@ -6,10 +6,12 @@ import datetime
 from pathlib import Path
 from PySide6.QtWidgets import (QPlainTextEdit, QPushButton, QListWidget, QListWidgetItem,
     QHBoxLayout, QLabel, QProgressBar, QFrame)
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, Signal
 from pages.base import BasePage
 from pages.notify import ThemeDialog
+from pages.workers import BoothTask
 import booth_core as bc
+import diag
 
 # R6 修复：原 r"booth\.pm/(?:ja/)?items/(\d{7})" 不认 zh-cn/en/ko 等所有 locale，
 # 改为「任意 locale 段（包括无 locale）」+ 「裸 7 位 ID」两种识别方式。
@@ -19,7 +21,7 @@ URL_RE = re.compile(
 BARE_ID_RE = re.compile(r"(?<![\dA-Za-z])(\d{7})(?![\dA-Za-z])")
 
 
-class LinksWorker(QThread):
+class LinksWorker(BoothTask):
     """R9 修复：之前只下载封面 + 做图标，从未下载商品本体（unitypackage/zip/blend/fbx等）。
 
     新流程：fetch_item（JSON API）→ 反查类目 → 建 dest → 拉商品页面 HTML 找下载链接列表
@@ -28,18 +30,12 @@ class LinksWorker(QThread):
     item_done = Signal(dict)
     finished = Signal()
 
-    def __init__(self, ids, root, proxy, proxy_url, cookie):
-        super().__init__()
+    def __init__(self, ids, root, cookie=""):
+        super().__init__(cookie)
         self.ids = ids
         self.root = Path(root)
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         for iid in self.ids:
             try:
                 it = bc.fetch_item(iid, s)
@@ -162,7 +158,7 @@ class LinksWorker(QThread):
                 except Exception as e:
                     # R17：manifest 写失败留痕——它是后续「缺文件」判定的依据，
                     # 静默吞掉会导致下次核对时凭空多出「缺失」项。
-                    print(f"  [warn] {iid} _manifest.json 写入失败：{e}")
+                    diag.warn(f"_manifest.json 写入失败：{e}", scope="links", iid=iid)
                 self.item_done.emit({
                     "id": iid, "name": name, "cat": cat,
                     "status": status, "dup": dup,
@@ -304,7 +300,7 @@ class LinksPage(BasePage):
         self.btn_run.setEnabled(False)
         self.btn_parse.setEnabled(False)
         self.worker = LinksWorker(
-            self.pending, cfg["booth_root"], cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+            self.pending, cfg["booth_root"], cfg["cookie"])
         self.worker.log.connect(self.main.set_status)
         self.worker.item_done.connect(self.on_done)
         self.worker.finished.connect(self.on_finished)

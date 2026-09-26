@@ -5,9 +5,10 @@ import re
 from pathlib import Path
 from PySide6.QtWidgets import (QListWidget, QPushButton, QHBoxLayout, QLabel,
     QProgressBar, QFrame)
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, Signal
 from pages.base import BasePage
 from pages.notify import ThemeDialog
+from pages.workers import BoothTask
 import booth_core as bc
 
 # R6 修复：原 r"^(\d{7})_(.+)$" 只接下划线，主上 7903148 Pixel Holy Halo（空格分隔）
@@ -88,42 +89,37 @@ def scan_library(root, on_progress=None):
     return out
 
 
-class ScanWorker(QThread):
+class ScanWorker(BoothTask):
     """R11 本地巡检：只做三件套 + 本体缺失（纯本地，秒级）。
     不再耦合联网错位检测（错位检测拆到 MismatchWorker 独立跑）。"""
     progress = Signal(int, int)  # (done, total)
     item = Signal(dict)
     done = Signal(list)
+    needs_session = False        # 纯本地扫描，不建请求会话
 
     def __init__(self, root):
         super().__init__()
         self.root = root
 
-    def run(self):
+    def work(self, session=None):
         items = scan_library(self.root, on_progress=self.progress.emit)
         for it in items:
             self.item.emit(it)
         self.done.emit(items)
 
 
-class MismatchWorker(QThread):
+class MismatchWorker(BoothTask):
     """R11 独立联网错位检测：遍历本地已扫目录，fetch_item 拿官方分类比对当前目录。
     独立于本地巡检，用户可单独跑，实时进度。"""
     progress = Signal(int, int)
     mismatch = Signal(dict)
     done = Signal(list)
 
-    def __init__(self, items, proxy=False, proxy_url="", cookie=""):
-        super().__init__()
+    def __init__(self, items, cookie=""):
+        super().__init__(cookie)
         self.items = items
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         total = len(self.items)
         mismatches = []
         for idx, it in enumerate(self.items, 1):
@@ -148,22 +144,16 @@ class MismatchWorker(QThread):
         self.done.emit(mismatches)
 
 
-class FixWorker(QThread):
+class FixWorker(BoothTask):
     """修复三件套：封面 + 图标 + ini。"""
     prog = Signal(str)
     finished = Signal(int)
 
-    def __init__(self, items, proxy, proxy_url, cookie):
-        super().__init__()
+    def __init__(self, items, cookie=""):
+        super().__init__(cookie)
         self.items = [i for i in items if i["missing"]]
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         fixed = 0
         for it in self.items:
             dest = Path(it["path"])
@@ -199,24 +189,18 @@ class FixWorker(QThread):
         self.finished.emit(fixed)
 
 
-class VersionWorker(QThread):
+class VersionWorker(BoothTask):
     """版本巡检（独立联网）：比对官方版本号。"""
     found = Signal(dict)
     prog = Signal(str)
     progress = Signal(int, int)
     finished = Signal()
 
-    def __init__(self, items, proxy, proxy_url, cookie):
-        super().__init__()
+    def __init__(self, items, cookie=""):
+        super().__init__(cookie)
         self.items = items
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         total = len(self.items)
         for idx, it in enumerate(self.items, 1):
             self.progress.emit(idx, total)
@@ -239,23 +223,17 @@ class VersionWorker(QThread):
         self.finished.emit()
 
 
-class FixMismatchWorker(QThread):
+class FixMismatchWorker(BoothTask):
     """R8 一键纠正错位：单件 archive_item(force=True) 重建到正确分类。"""
     prog = Signal(str)
     finished = Signal(int)
 
-    def __init__(self, items, root, proxy, proxy_url, cookie):
-        super().__init__()
+    def __init__(self, items, root, cookie=""):
+        super().__init__(cookie)
         self.items = items
         self.root = root
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         from archive_util import archive_item
         fixed = 0
         for m in self.items:
@@ -272,25 +250,19 @@ class FixMismatchWorker(QThread):
         self.finished.emit(fixed)
 
 
-class BackfillWorker(QThread):
+class BackfillWorker(BoothTask):
     """R10 一键补全本体：拉取 BOOTH 商品页下载链接补齐缺失。"""
     prog = Signal(str)
     progress = Signal(int, int)
     finished = Signal(int)
 
-    def __init__(self, items, root, proxy, proxy_url, cookie):
-        super().__init__()
+    def __init__(self, items, root, cookie=""):
+        super().__init__(cookie)
         self.items = [i for i in items
                       if i.get("body_missing") or i.get("corrupt")]  # R19: 损坏也补全
         self.root = root
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         total = len(self.items)
         fixed = 0
         for idx, it in enumerate(self.items, 1):
@@ -564,7 +536,7 @@ class AuditPage(BasePage):
         self.list_scan.addItem("── 修复日志 ──")
         self.btn_fix.setEnabled(False)
         self.fix_worker = FixWorker(
-            self.scan_items, cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+            self.scan_items, cfg["cookie"])
         self.fix_worker.prog.connect(lambda m: self.list_scan.addItem(m))
         self.fix_worker.finished.connect(self.on_fix_done)
         self.fix_worker.start()
@@ -625,7 +597,7 @@ class AuditPage(BasePage):
         self.btn_mismatch.setEnabled(False)
         cfg = self.main.config
         self.mismatch_worker = MismatchWorker(
-            items, cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+            items, cfg["cookie"])
         self.mismatch_worker.progress.connect(self._on_mismatch_progress)
         self.mismatch_worker.mismatch.connect(self.on_mismatch_item)
         self.mismatch_worker.done.connect(self.on_mismatch_done)
@@ -656,7 +628,7 @@ class AuditPage(BasePage):
         self.btn_fix_mismatch.setEnabled(False)
         self.list_mismatch.addItem("── 纠正日志 ──")
         self.fix_mismatch_worker = FixMismatchWorker(items, cfg["booth_root"],
-            cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+            cfg["cookie"])
         self.fix_mismatch_worker.prog.connect(self.list_mismatch.addItem)
         self.fix_mismatch_worker.finished.connect(self.on_fix_mismatch_done)
         self.fix_mismatch_worker.start()
@@ -677,7 +649,7 @@ class AuditPage(BasePage):
         self.ver_bar.setValue(0)
         self.btn_ver.setEnabled(False)
         self.ver_worker = VersionWorker(
-            self.scan_items, cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+            self.scan_items, cfg["cookie"])
         self.ver_worker.found.connect(self.on_ver_found)
         self.ver_worker.progress.connect(self._on_ver_progress)
         self.ver_worker.prog.connect(lambda m: self.main.set_status(m))
@@ -758,7 +730,7 @@ class AuditPage(BasePage):
         self.lbl_backfill.setText(f"正在补全 {len(body_items)} 件…")
         self.list_backfill.addItem("── 补全日志 ──")
         self.backfill_worker = BackfillWorker(body_items, cfg["booth_root"],
-            cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+            cfg["cookie"])
         self.backfill_worker.progress.connect(self._on_backfill_progress)
         self.backfill_worker.prog.connect(self.list_backfill.addItem)
         self.backfill_worker.finished.connect(self.on_backfill_done)
@@ -782,19 +754,20 @@ class AuditPage(BasePage):
 
 
 # R23（2026-09-08 主上实测）：黄色默认图标一键修复
-class FixSysAttrWorker(QThread):
+class FixSysAttrWorker(BoothTask):
     """扫描 BOOTH 大类目录，一键修复黄色默认图标：
     ① 给「三件套齐全但父目录缺 S 位」的目录补 S（R23）；
     ② desktop.ini 老格式归一化为 shell 标准格式（R24）。
     纯本地属性位 + ini 文本重写，零下载，秒级完成。"""
     prog = Signal(str)
     finished = Signal(dict)
+    needs_session = False        # 纯本地属性修复，不建请求会话
 
     def __init__(self, roots: list[str]):
         super().__init__()
         self.roots = roots
 
-    def run(self):
+    def work(self, session=None):
         def _cb(m):
             self.prog.emit(m)
         result = bc.fix_folder_system_attr(self.roots, on_progress=_cb)

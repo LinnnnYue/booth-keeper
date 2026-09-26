@@ -5,11 +5,13 @@ import datetime
 from pathlib import Path
 from PySide6.QtWidgets import (QFrame, QListWidget, QListWidgetItem, QLabel, QPushButton,
     QHBoxLayout, QProgressBar, QVBoxLayout, QGraphicsOpacityEffect)
-from PySide6.QtCore import Qt, QThread, Signal, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QColor
 from pages.base import BasePage
 from pages.notify import ThemeDialog
+from pages.workers import BoothTask
 import theme
+import diag
 import booth_core as bc
 from archive_util import archive_item
 
@@ -106,22 +108,16 @@ class DropFrame(QFrame):
             self._glow.hide()
 
 
-class DragWorker(QThread):
+class DragWorker(BoothTask):
     item_done = Signal(dict)
     finished = Signal()
 
-    def __init__(self, jobs, root, proxy, proxy_url, cookie):
-        super().__init__()
+    def __init__(self, jobs, root, cookie=""):
+        super().__init__(cookie)
         self.jobs = jobs
         self.root = root
-        self.proxy = proxy
-        self.proxy_url = proxy_url
-        self.cookie = cookie
 
-    def run(self):
-        s = bc.make_session(self.cookie)
-        if self.proxy:
-            s.proxies.update({"http": self.proxy_url, "https": self.proxy_url})
+    def work(self, s):
         for path, iid in self.jobs:
             r = archive_item(iid, self.root, s, move_source=path, force=False)
             r["path"] = path
@@ -220,8 +216,11 @@ class DragDropPage(BasePage):
             data["entries"] = data["entries"][:500]
             self._done_file.write_text(
                 json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as err:
+            # R23：历史写入失败留痕 —— 该项下次打开「已完成」列表时凭空消失，
+            # 用户会以为没归档成功。原先静默吞掉。
+            diag.warn(f"历史记录写入失败（该项不会出现在已完成列表）：{err}",
+                      scope="dragdrop._push_done", iid=iid)
 
     def _remove_pending(self, p: str):
         """按 path 从待归档队列移除该项。"""
@@ -283,7 +282,7 @@ class DragDropPage(BasePage):
         self.bar.setValue(0)
         self.btn_run.setEnabled(False)
         self.worker = DragWorker(
-            self._batch, cfg["booth_root"], cfg["proxy"], cfg["proxy_url"], cfg["cookie"])
+            self._batch, cfg["booth_root"], cfg["cookie"])
         self.worker.item_done.connect(self.on_done)
         self.worker.finished.connect(self.on_finished)
         self.worker.start()
@@ -349,9 +348,8 @@ class DragDropPage(BasePage):
     def _force_redo(self, iid: str, source_path: str):
         """强制重归档：单件重跑 archive_item(force=True)，结果入右栏历史。"""
         cfg = self.main.config
+        # R23：代理走 booth_core 全局真源，不再逐处手工装配
         s = bc.make_session(cfg["cookie"])
-        if cfg["proxy"]:
-            s.proxies.update({"http": cfg["proxy_url"], "https": cfg["proxy_url"]})
         r = archive_item(iid, cfg["booth_root"], s, move_source=source_path, force=True)
         name = r.get("name") or Path(source_path).name
         if r["status"] == "ok":
