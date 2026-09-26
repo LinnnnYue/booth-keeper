@@ -10,6 +10,56 @@
 
 ---
 
+## [v1]-raphael-20260927-0225 R24：P4 残留项处置（异常契约兜底 / 兜底留痕 / updater 静默点） — 2026-09-27 02:25 开始
+
+- **执行者**: 拉斐尔（WorkBuddy Agent，机器：DESKTOP-N3O6SC2）
+- **目标**: 主上指令「残留未做的继续交由你来执行」——处置 `review/2026-09-27-P3四项验收记录.md` §五 登记的 5 项残留。纪律照旧：先实测取证 → 写需求文档 → 再动手；做一个勾一个；拒绝估算值。
+- **上下文**: 依赖 R23 末次提交 `5da9fa4`。残留 5 项中 3 项在归档记录里只有一句话判断（如「网络异常会直接抛出」），**未经实测**，故本轮先从取证入手，再决定做与不做。
+- **进展**:
+  1. **先取证，后定性**：写两个**只读探针**（`tests/_probe_exception.py` 逐类注入异常、`tests/_probe_batch_abort.py` 对照三个批量调用点），取得实测后才写需求文档。**结果收窄了归档记录的 1 处推断**（见坑 1）。
+  2. **需求文档**：产出 [`03-残留项处置.md`](../03-残留项处置.md)，定「做 4 项 / 明确不做 3 项」，做项按五段格式 + 10 条编号验收口径，不做项逐条附判据；并预先写入「静默点计数持平是预期」的口径说明（见坑 5）。
+  3. **§3.1 契约兜底**：`archive_item` 最外层统一收口，原函数体**整体改名** `_archive_item`（203 行，一行未改），新增 23 行包装声明契约「永不抛异常，永远返回 dict」。
+  4. **§3.2 兜底留痕**：兜底分支接 `diag.error(scope="archive_item", iid=iid)`——否则等于用「静默返回 err」换掉「崩溃」。
+  5. **§3.3 / §3.4**：`pages/updater.py` 两处加 `diag.warn`（`_resolve_proxies` 代理解析失败；`parse_local_version` 三源全失败），**两处返回值均不变**。
+  6. **测试网**：新增 `tests/test_archive_contract.py`（9 用例，口径 1~7）与 `tests/test_updater_diag.py`（5 用例，口径 8~10），共用辅助 `tests/_diag_capture.py`。**按主题拆成两个文件，是为了让两次代码提交各自可独立验证**（见「纪律改进」条）。
+  7. **反向验证**：故意绕过兜底，断言测试网**应当失败**（三组对照，见验证段）——防止重演 P3 的伪绿事件。
+  8. **独立提交**：拆为 `R24-1`（归档契约，`763b3fe`）+ `R24-2`（updater 留痕，`e2b36ff`）两次提交，并以 `git worktree` 在**两个提交点各自独立重跑检查**，实证「中间提交可验证」。
+  9. **清理**：两个探针的价值已被正式用例覆盖，按需求文档红线第 1 条**删除**，不留悬空脚本。
+- **验证**（2026-09-27 实测，全部退出码 0）:
+  - `QT_QPA_PLATFORM=offscreen python tests/test_archive_contract.py` → **Ran 9 tests, OK**（0.324s，无真实网络）
+  - `python tests/test_updater_diag.py` → **Ran 5 tests, OK**（0.221s，不涉 Qt）
+  - **中间提交可验证性实证**（`git worktree` 各 checkout 一次，独立重跑）：
+    · `763b3fe`（R24-1）→ 依赖检查 缺失 0、代理 违规 0、`test_archive_flow` OK、`test_rollback` OK、`test_archive_contract` **9/9 OK**
+    · `e2b36ff`（R24-2）→ 同上全部 OK，另加 `test_updater_diag` **5/5 OK**
+  - `python tests/test_archive_flow.py` → **Ran 6 tests, OK**（0.091s）；`python tests/test_rollback.py` → **Ran 5 tests, OK**（0.073s）
+  - `python tests/check_module_deps.py` → 6 模块全 OK，**合计缺失 = 0**
+  - `python tests/check_proxy_single_source.py` → 扫描 24 文件，**违规 0**（白名单 1 条）
+  - `python tests/_compare_worker_contract.py 4d3c6b6` → **不一致 = 0**
+  - `QT_QPA_PLATFORM=offscreen python tests/_smoke_offscreen.py` → `title = Booth Keeper v1.5.6`、`pages = ['links','drag','search','audit','settings']`、`diag_btn = True`、sink 收报 3/3、rc=0
+  - `compileall` 全量 → rc=0
+  - **核心实测（DragWorker 单件异常注入，4 件投放）**：处理件数 **1/4 → 4/4**；`finished` **未发射 → 已发射**；失败件以 `status="err"` 上报而非消失；`worker.failed` 未发射（单件失败不冒泡到 worker 级）
+  - **注入矩阵**：`archive_item` 5 场景（`ConnectionError`/`ProxyError`/`Timeout`/`RuntimeError`/`classify_item_state` 异常）**穿透 5/5 → 0/5**
+  - **反向验证三组对照**：绕过兜底 → **1/4 + `finished` 未发射**（旧缺陷完整复现）；走真实契约 → 4/4 + 已发射；无注入基线 → 4/4 + 已发射
+  - **留痕对照**：绕过兜底输出 `[error] DragWorker: 后台任务异常：boom`（冒泡到 worker 级）；走真实契约输出 `[error] archive_item: 归档异常：RuntimeError: boom  iid=2000002`（scope + iid 均正确）
+  - **归档主流程 6 条路径逐条复核**：`ok`→3D模型 / `exists`→3D模型 / `force`→ok + 留档=True / `delisted`→已下架商品 / 连不上→`err` 且消息「无法连接 BOOTH 判定状态」，**零回归**
+  - 静默点（R17 评审 §5 同口径）：`4d3c6b6` 29 → `5da9fa4` 21 → **R24 21（持平，预期内）**；测试用例总数 11 → **25**
+- **决策与坑**:
+  - **坑 1（推断未实测就写进归档，被打脸）**：验收记录 §五-5 原文称「网络异常会直接抛出」，实测显示 `fetch_item` / `probe_item_http` / `probe_reachable` **内部均已有兜底**，`retry_request` 重试耗尽抛出的 `ConnectionError` 会被吞掉并返回 `None`——**真实网络故障下不会穿透**。收窄后本项价值重新定位为「终结契约未声明、调用方各自猜测」，**危害的充分条件是「异常一旦发生即静默丢件」而非「异常必现」**，实测已证明后者不成立而前者成立（4 件丢 3 件 + UI 悬挂），故仍定级高危。**教训：归档记录里的一句话判断，只能当线索，不能当事实——写入需求文档的现象段前必须跑一遍。**
+  - **坑 2（根因是「契约缺失」而非「缺 try」）**：实测发现同一函数在 3 个调用点有**两种**健壮性——`ArchiveWorker` / `FixMismatchWorker` 包了 `try`，`DragWorker` 没包。这不是「某人忘了写」，而是**契约未声明导致各自猜测**的必然结果：只要不声明，第 4 个调用点还会猜错。故选定**在最外层收口（修根）**，而非给 `DragWorker` 补 `try`（治枝）。
+  - **坑 3（改名的零侵入价值）**：原函数体 190+ 行含 R23 刚加固的三处回滚路径，若采用「在原函数体内到处补 `try`」需改十几处、回归面极大。改名 + 外层包装使内部**一行未改**，把「加固」与「重构」彻底分开。代价是新增一个内部函数名，已在 `_archive_item` 的 docstring 标注「请勿直接从 UI 调用」。
+  - **坑 4（一次性脚本也要先跑通）**：`_probe_exception.py` 的 `mock.patch.object` 参数结构（`attr` / `kind` / `value`）连改两版才跑通——初版把 `kind` 当关键字、第二版三元组与四元组混用。**探针给出的结论只有在其自身可靠时才有意义**，脚本本身的错误会伪装成「代码行为」。
+  - **坑 5（预先声明口径，避免「没做完」的误判）**：本轮**没有**降低 `except: pass` 计数（21 持平）。这**不是未完成**——需求文档 §附已事先写明：本轮加固的是「契约缺失」与「无留痕」，目标是消除影响状态承诺却无出口的静默；若以计数下降为验收标准，会诱导把正常降级链（如开发态 `_version` 不存在）也塞进日志，制造噪音淹没真信号。**把「预期不变」提前写进文档，比事后解释便宜得多。**
+  - **坑 6（Edit 精确匹配失败）**：改 `archive_item` docstring 时漏了原文的「fetch **失败**不妄断」中的「失败」二字，Edit 报 not found。按纪律先 Read 定位差异再改，未盲目重试。
+  - **坑 7（工作目录漂移）**：会话工作区根是 `D:\Lin_Agent\WB-WorkSpace\Github`，而 BoothKeeper 实体在 `D:\Lin_Agent\WB-WorkSpace\BoothKeeper`。每轮开工先核 `git log` 对齐世界线，避免在错误目录操作。
+  - **纪律改进（纠正 P3 登记的偏离）**：P3 红线第 4 条「每项独立提交」未达成，当时以「按文件组的回退映射」作补偿。本轮把它做对——拆为 `R24-1` / `R24-2` 两次代码提交，并把测试文件**按主题拆成两个**（否则单个测试文件跨两项，中间提交必然是红的，独立提交就无从验证）。**关键动作**：用 `git worktree add --detach <sha>` 在两个提交点**各自独立重跑全套检查**，实测均绿。只拆不验证，「独立提交」只是形式；验证过才是可回退性的实证。代价是抽出一个共享辅助文件 `tests/_diag_capture.py`（`diag` 的 sink 是全局单接收方，两处测试需要同一套接管/恢复逻辑，复制两份会漂移）。
+  - **决策：明确不做 3 项 + 不改 1 类，全部附判据**（需求文档 §四）。判据统一为「失败是否破坏用户可感知的状态承诺」——`updater` 另 3 处 `except: pass` 中，`_fetch_html_tag` / `_fetch_api_release` 的 `None` 由 `check_update` 转为 `error` 字段，`settings_page.check_update_now` **有明确弹窗**，故**不属静默**，不动。
+  - **决策：`diag` 仍是单接收方**。当前仅主窗口一处接收方，改 handler 列表属为不存在的需求增加 API 表面积与线程亲和性复杂度；「按需演进」而非「提前建设」。
+- **代码状态**: `R24-1 = 763b3fe`（`archive_util.py`：+23 行包装 / 原体整体改名 `_archive_item`；`tests/test_archive_contract.py` 9 用例；`tests/_diag_capture.py` 共享辅助）。`R24-2 = e2b36ff`（`pages/updater.py`：2 处 `diag.warn` + import；`tests/test_updater_diag.py` 5 用例）。`R24-3 = 本条所在提交`（文档层：`plan.md` P4 段勾选、`03-残留项处置.md` 需求文档、`review/2026-09-27-P4残留项验收记录.md`、`REGISTRY.md` 两行修订）。两个探针脚本已删除。
+- **状态**: ✅完成（10 条验收口径全绿；做 4 项 / 不做 3 项均已登记判据；反向验证证明测试网有牙；本轮**无偏离立项**）
+- **下一步**: ①推送 `origin/main`；②残留见 `review/2026-09-27-P4残留项验收记录.md` §六——底层三处 `s = session or make_session()` 位于 `try` 之外，实测可穿透但 Worker 路径下因 `or` 短路**当前不可达**，按 R23 确立的「不可达路径先补演练用例再改」纪律登记备查。
+
+---
+
 ## [v1]-raphael-20260927-0230 R23：P3 四项全量落地（诊断通道 / 回滚加固 / Worker 基类 / booth_core 拆分） — 2026-09-27 02:30 开始
 
 - **执行者**: 拉斐尔（WorkBuddy Agent，机器：DESKTOP-N3O6SC2）

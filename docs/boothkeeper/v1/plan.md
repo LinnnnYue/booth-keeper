@@ -51,4 +51,20 @@
 - [x] `booth_core.py` 单体拆分 — 1439 行 → `bk_net`(449) / `bk_search`(307) / `bk_shell`(304) / `bk_local`(258) / `bk_text`(177) / `bk_domain`(99)，`booth_core.py` 改为 116 行门面（模块级 `__getattr__` 动态转发）— 验收：公共符号 51 = 51（差异集为空）；调用点消失 0 个；全部模块 < 620 行；`tests/test_archive_flow.py` 6/6 与 `tests/test_rollback.py` 5/5 全绿；离屏启动 `title`/`pages` 与拆分前一致 ✅
 - [x] 回填 worklog 并提交推送 — worklog 条目 `[v1]-raphael-20260927-0230` 记实测与四处偏离；需求文档 3 小节按实测更正 — 验收：`git log --format=%h -1` 见本轮提交，`git ls-remote origin main` 与本地 HEAD 一致 ✅
 
+## P4 — 残留项处置 · R24
+
+> 需求文档：[`03-残留项处置.md`](03-残留项处置.md)。
+> 来源：`review/2026-09-27-P3四项验收记录.md` §五 5 项残留 + 主上指令「残留未做的继续交由你来执行」。
+> **处置分界：做 4 项、明确不做 3 项**（不做项均附判据，见需求文档 §四）。
+> 本轮**收窄了归档记录的 1 处推断**：`fetch_item` 内部已有 `try`，真实网络故障
+> **不会**穿透；真正暴露面是「契约未声明 + 调用方各自猜测」，详见 §3.1。
+
+- [x] 写 P4 需求文档 — 产出 [`03-残留项处置.md`](03-残留项处置.md)：现象段全部引用本轮实测（`tests/_probe_exception.py` / `tests/_probe_batch_abort.py`），含处置分界表、4 项五段论证、3 项不做项判据、口径说明 — 验收：五段标题齐全，10 条验收口径编号连续，不做项逐条附判据 ✅
+- [x] `archive_item` 异常契约兜底（高危）— 最外层统一收口，契约改为「永不抛异常，永远返回 dict」；原函数体改名 `_archive_item` 零侵入（包装 23 行 / 原体 203 行）— 验收：4 类注入异常 + `classify_item_state` 异常共 5 场景均返回 `status="err"` 不抛；`DragWorker` 处理件数由 **1/4 → 4/4**、`finished` 由**未发射 → 已发射** ✅
+- [x] 兜底路径可观测 — 兜底分支接 `diag.error`，`scope="archive_item"` 且 `ctx["iid"]` 可定位 — 验收：注入时收到 `scope="archive_item"` / `iid=2000002` 的 error 记录；正常归档路径 error 记录数 = 0 ✅
+- [x] `updater` 两处静默留痕 — `_resolve_proxies` 代理解析失败与 `parse_local_version` 三源全失败，各加 `diag.warn`（返回值均不变）— 验收：两处各产生 1 条 warn；反向用例（`proxy=False` 强制直连 / 取到版本号 / 降级链第二级命中）记录数均为 0，无误报 ✅
+- [x] 建异常契约测试网 — 新增 `tests/test_archive_contract.py`（14 用例，对应验收口径 1~10）— 验收：`Ran 14 tests` / `OK`，退出码 0，耗时 0.245s（无真实网络）✅
+- [x] 全量回归 — 依赖检查 缺失 0 / 代理真源 违规 0 / 回滚演练 5/5 / 归档主流程 6/6 / Worker 契约 差异 0 / 离屏冒烟 rc=0 / `py_compile` rc=0 — 验收：全部通过；归档主流程 6 条路径（`ok`/`exists`/`mismatch`/`force` 留档/`delisted`/连不上不妄断）逐条复核零回归；静默点 21 **与 P3 后持平**（符合需求文档口径说明：本轮以消除「无留痕」为目标，不以降低 `except: pass` 计数为目标）✅
+- [x] 回填文档并提交推送 — plan 勾选 + review 验收记录 + worklog 条目；清理两个一次性探针 — 验收：`git ls-remote origin main` 与本地 HEAD 一致 ✅
+
 <!-- 新阶段在末尾顺延编号追加（P4、P5…）；新需求先走需求文档评审再插入或新起 PX。 -->
